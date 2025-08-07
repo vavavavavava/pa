@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (v2.6 Auto Collect Fix)
 // @namespace    http://tampermonkey.net/
-// @version      2.7.1
+// @version      2.7.2
 // @description  Автоматичний збір даних з вкладок Overview + Content, імітація кліків, два модальні вікна, окремі режими надсилання
 // @author       Юля
 // @match        https://studio.youtube.com/*
@@ -130,8 +130,11 @@ const waitForRedirect = setInterval(() => {
             console.log('📌 Клік на Content');
             contentTab.click();
             waitForElement('#metric-total', () => {
-                extractContentDataAndSend();
-            }, '[step: після клік на Content]');
+                console.log('⏳ Знайдено блок #metric-total, чекаємо 3 секунди на прогрузку даних...');
+                    setTimeout(() => {
+                    extractContentDataAndSend();
+                    }, 3000); // 3000 мс = 3 секунди
+                }, '[step: після клік на Content]');
         }, '[step: clickContentTab]');
     }
 
