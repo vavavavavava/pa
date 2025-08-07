@@ -5,6 +5,8 @@
 // @description  Автоматичний збір даних з вкладок Overview + Content, імітація кліків, два модальні вікна, окремі режими надсилання
 // @author       Юля
 // @match        https://studio.youtube.com/*
+// @updateURL    https://raw.githubusercontent.com/vavavavavava/pa/main/YouTube%20Studio%20Stats%20Extractor%20(v2.6%20Auto%20Collect%20Fix)-2.7.1.user.js
+// @downloadURL  https://raw.githubusercontent.com/vavavavavava/pa/main/YouTube%20Studio%20Stats%20Extractor%20(v2.6%20Auto%20Collect%20Fix)-2.7.1.user.js
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
