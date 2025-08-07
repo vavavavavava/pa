@@ -155,6 +155,7 @@ function goToVideosAndExtractCount(contentMetrics) {
     waitForElement(selector, (contentTab) => {
         console.log('📌 Переходимо на сторінку /videos для збору кількості відео');
         contentTab.click();
+
         waitForElement('.page-description', () => {
             const el = document.querySelector('.page-description');
             if (!el) {
@@ -162,21 +163,27 @@ function goToVideosAndExtractCount(contentMetrics) {
                 return;
             }
 
-            const text = el.textContent.trim();
-            const match = text.match(/(?:из|of)\s*(\d+)/i);
+            const rawText = el.textContent || '';
+            const cleanedText = rawText.trim().replace(/\u00A0/g, ' ');
+            console.log('📄 Текст .page-description (cleaned):', cleanedText);
+
+            const match = cleanedText.match(/(?:из|of)\s*(?:примерно|approximately)?\s*(\d+)/i);
             if (!match || !match[1]) {
-                console.warn('⚠️ Не вдалось розпізнати кількість відео');
+                console.warn('⚠️ Не вдалось розпізнати кількість відео. Повний текст:', cleanedText);
                 return;
             }
 
             const total = parseInt(match[1].replace(/\s/g, ''), 10);
+            if (isNaN(total)) {
+                console.warn('⚠️ Не вдалося перетворити в число:', match[1]);
+                return;
+            }
+
             console.log('🎞 Загальна кількість відео:', total);
 
-            // формуємо contentDataTemp з totalVideos
             const channelName = overviewDataTemp.split(';')[0] || 'Channel';
             contentDataTemp = `${channelName};${contentMetrics.impressions};${contentMetrics.ctr};${contentMetrics.avgViewDuration};${contentMetrics.dateRange};${total}`;
 
-            // надсилаємо обидва
             showModal('📊 Overview Data', overviewDataTemp);
             showModal('📺 Content Data', contentDataTemp);
 
@@ -193,21 +200,27 @@ function extractTotalVideosCount() {
         return '';
     }
 
-    const text = descriptionEl.textContent.trim();
-    // Підтримка варіантів: "из 44", "из примерно 127", "of approximately 127"
-    const match = text.match(/(?:из|of)\s+(?:примерно|approximately)?\s*(\d+)/i);
+    const rawText = descriptionEl.textContent;
+    const text = rawText.trim().replace(/\u00A0/g, ' ');
+
+    console.log('🔍 Тестовий вивід тексту з .page-description:');
+    console.log('📄 rawText:', rawText);
+    console.log('📄 cleanedText:', text);
+
+    const match = text.match(/(?:из|of)\s*(?:примерно|approximately)?\s*(\d+)/i);
 
     if (match && match[1]) {
-        const total = parseInt(match[1].replace(/\s/g, ''), 10);
+        const total = parseInt(match[1], 10);
         if (!isNaN(total)) {
             console.log('🎞 Виявлено загальну кількість відео:', total);
             return total;
         }
     }
 
-    console.warn('⚠️ Не вдалося розпізнати кількість відео. Текст:', text);
+    console.warn('⚠️ Не вдалося розпізнати кількість відео. Повний текст:', text);
     return '';
 }
+
 
    function extractOverviewData(callback) {
     waitForElement('.metric-value.style-scope.yta-latest-activity-card', () => {
