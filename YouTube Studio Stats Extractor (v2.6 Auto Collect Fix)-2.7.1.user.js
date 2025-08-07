@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (v2.6 Auto Collect Fix)
 // @namespace    http://tampermonkey.net/
-// @version      2.7.2
+// @version      2.7.3
 // @description  Автоматичний збір даних з вкладок Overview + Content, імітація кліків, два модальні вікна, окремі режими надсилання
-// @author       Юля
+// @author       Вадим
 // @match        https://studio.youtube.com/*
 // @updateURL    https://raw.githubusercontent.com/vavavavavava/pa/main/YouTube%20Studio%20Stats%20Extractor%20(v2.6%20Auto%20Collect%20Fix)-2.7.1.user.js
 // @downloadURL  https://raw.githubusercontent.com/vavavavavava/pa/main/YouTube%20Studio%20Stats%20Extractor%20(v2.6%20Auto%20Collect%20Fix)-2.7.1.user.js
@@ -186,19 +186,27 @@ function goToVideosAndExtractCount(contentMetrics) {
     }, '[step: клік у лівому меню]');
 }
 
-function extractTotalVideosCount(callback) {
-    waitForElement('.page-description', (el) => {
-        const text = el.textContent.trim();
-        const match = text.match(/(?:из|of)\s*(\d+)/i);
-        if (match && match[1]) {
-            const total = parseInt(match[1].replace(/\s/g, ''), 10);
-            console.log('📦 Всього відео на каналі:', total);
-            if (typeof callback === 'function') callback(total);
-        } else {
-            console.warn('⚠️ Не вдалось розпізнати кількість відео');
-            if (typeof callback === 'function') callback('');
+function extractTotalVideosCount() {
+    const descriptionEl = document.querySelector('.page-description');
+    if (!descriptionEl) {
+        console.warn('⚠️ .page-description не знайдено');
+        return '';
+    }
+
+    const text = descriptionEl.textContent.trim();
+    // Підтримка варіантів: "из 44", "из примерно 127", "of approximately 127"
+    const match = text.match(/(?:из|of)\s+(?:примерно|approximately)?\s*(\d+)/i);
+
+    if (match && match[1]) {
+        const total = parseInt(match[1].replace(/\s/g, ''), 10);
+        if (!isNaN(total)) {
+            console.log('🎞 Виявлено загальну кількість відео:', total);
+            return total;
         }
-    }, '[step: extractTotalVideosCount]');
+    }
+
+    console.warn('⚠️ Не вдалося розпізнати кількість відео. Текст:', text);
+    return '';
 }
 
    function extractOverviewData(callback) {
