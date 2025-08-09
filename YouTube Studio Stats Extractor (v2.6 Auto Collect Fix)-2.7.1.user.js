@@ -157,8 +157,9 @@
         if (isNaN(total)) return;
 
         const combinedData =
-          `${overviewChannel};${overviewDateUTC};${oSubscribers};${oViewsPeriod};${oHoursPeriod};${oViews48h};${overviewChannel};` +
-          `${contentMetrics.impressions};${contentMetrics.ctr};${contentMetrics.avgViewDuration};${contentDateUTC};${total}`;
+  `${overviewChannel};${overviewDateUTC};${oSubscribers};${oViewsPeriod};${oHoursPeriod};${oViews48h};${overviewChannel};` +
+  `${contentMetrics.impressions};${contentMetrics.ctr};${contentMetrics.avgViewDuration}${'\u200B'};${contentDateUTC};${total}`;
+
 
         console.log('📦 Об’єднані дані для відправки:', combinedData);
         setButtonStatus('✅ Контент');
