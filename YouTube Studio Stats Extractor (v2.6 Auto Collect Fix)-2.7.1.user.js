@@ -158,7 +158,7 @@
 
         const combinedData =
   `${overviewChannel};${overviewDateUTC};${oSubscribers};${oViewsPeriod};${oHoursPeriod};${oViews48h};${overviewChannel};` +
-  `${contentMetrics.impressions};${contentMetrics.ctr};${contentMetrics.avgViewDuration}${'\u200B'};${contentDateUTC};${total}`;
+  `${contentMetrics.impressions};${contentMetrics.ctr}${'\u200B'};${contentMetrics.avgViewDuration}${'\u200B'};${contentDateUTC};${total}`;
 
 
         console.log('📦 Об’єднані дані для відправки:', combinedData);
