@@ -1,12 +1,9 @@
 // ==UserScript==
-// @name         YouTube Studio Stats Extractor (v2.6 Auto Collect Fix)
+// @name         YouTube Studio Stats Extractor (No FAB, Remove Logout)
 // @namespace    http://tampermonkey.net/
 // @version      2.7.14
-// @description  Автоматичний збір даних з вкладок Overview + Content, статуси в кнопці, одна відправка (UTC), порядок полів за ТЗ, конвертація тыс/млн у числа з логом у консоль
-// @author       Вадим
+// @description  Автоматичний збір даних з вкладок Overview + Content, видалення кнопки "Вийти" та стабільний інжект кнопки "Дані"
 // @match        https://studio.youtube.com/*
-// @updateURL    https://raw.githubusercontent.com/vavavavavava/pa/main/YouTube%20Studio%20Stats%20Extractor%20(v2.6%20Auto%20Collect%20Fix)-2.7.1.user.js
-// @downloadURL  https://raw.githubusercontent.com/vavavavavava/pa/main/YouTube%20Studio%20Stats%20Extractor%20(v2.6%20Auto%20Collect%20Fix)-2.7.1.user.js
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
@@ -31,103 +28,51 @@
 
   console.log('🟢 Скрипт завантажено');
 
-// ========================
-// UI helpers & static actions (added)
-// ========================
-
-// Robust removal of the "Sign out" menu item in the account menu.
-// Strategy: find any ytd-compact-link-renderer that contains a #subtitle with text "Вийти" or "Sign out" and remove the renderer entirely.
-// Надійне видалення "Вийти" тільки в меню акаунта
-function removeSignOutMenuItem() {
-  try {
-    // працюємо лише в контейнері попап-меню, щоб випадково не зачепити інші елементи
-    const menus = document.querySelectorAll('ytd-popup-container, tp-yt-paper-dialog, ytd-multi-page-menu-renderer');
-    menus.forEach(root => {
-      const link = root.querySelector(
-        'a[href*="/logout"], a[href^="https://www.youtube.com/logout"], a[href^="https://accounts.google.com/Logout"]'
+  // --- Видалення кнопки "Вийти" по посиланню logout ---
+  function removeSignOutMenuItem() {
+    try {
+      const link = document.querySelector(
+        'ytd-compact-link-renderer a[href*="/logout"], a[href^="https://www.youtube.com/logout"], a[href^="https://accounts.google.com/Logout"]'
       );
       if (link) {
-        const item = link.closest('ytd-compact-link-renderer, tp-yt-paper-item');
-        if (item) {
-          item.remove();
-          console.log('🗑️ Видалено пункт меню "Вийти" (за посиланням logout)');
+        const parentItem = link.closest('ytd-compact-link-renderer, tp-yt-paper-item');
+        if (parentItem) {
+          parentItem.remove();
+          console.log('🗑️ Видалено пункт меню "Вийти"');
         }
       }
-    });
-  } catch (e) {
-    console.warn('removeSignOutMenuItem error:', e);
-  }
-}
-
-// спрацьовує коли меню рендериться/оновлюється
-const signOutObserver = new MutationObserver(() => removeSignOutMenuItem());
-signOutObserver.observe(document.body, { childList: true, subtree: true });
-// перший прохід
-removeSignOutMenuItem();
-
-// Fallback: add a floating action button for data extraction in case header selectors change
-function ensureFloatingExtractButton() {
-  if (document.querySelector('#extract-button')) return; // already exists (header version)
-  if (document.querySelector('#extract-button-fab')) return; // floating already exists
-
-  const fab = document.createElement('button');
-  fab.id = 'extract-button-fab';
-  fab.textContent = '📊 Дані';
-  Object.assign(fab.style, {
-    position: 'fixed',
-    bottom: '16px',
-    left: '16px',
-    zIndex: '2147483647',
-    padding: '10px 14px',
-    fontWeight: 'bold',
-    borderRadius: '8px',
-    border: 'none',
-    cursor: 'pointer',
-  });
-  fab.style.backgroundColor = '#3ea6ff';
-  fab.style.color = '#ffffff';
-
-  // Reuse the same behavior as main button
-  fab.addEventListener('click', () => {
-    try {
-      console.log('🟡 Клік по FAB "Дані"');
-      setButtonStatus && setButtonStatus('📊 Дані');
-      forceCollect = true;
-      redirectedFromWrongTab = false;
-      startCombinedDataCollection(true);
     } catch (e) {
-      console.warn('FAB click error:', e);
+      console.warn('removeSignOutMenuItem error:', e);
     }
-  });
+  }
+  const signOutObserver = new MutationObserver(() => removeSignOutMenuItem());
+  signOutObserver.observe(document.body, { childList: true, subtree: true });
+  removeSignOutMenuItem();
 
-  document.body.appendChild(fab);
-  console.log('➕ Додано плаваючу кнопку "Дані"');
-}
-
-// Watch for header presence but always ensure FAB exists as a fallback
-const fabObserver = new MutationObserver(() => ensureFloatingExtractButton());
-fabObserver.observe(document.body, { childList: true, subtree: true });
-// First pass on load
-ensureFloatingExtractButton();
-
-  const observer = new MutationObserver(() => {
-    let headerContainer = document.querySelector('#right-section-content')
-                       || document.querySelector('#right-section')
-                       || document.querySelector('#right-content')
-                       || document.querySelector('ytcp-header #right')
-                       || document.querySelector('ytcp-header #right-container');
-    if (headerContainer && !document.querySelector('#extract-button')) {
-      console.log('🔘 Інжект кнопки...');
-      injectButton(headerContainer);
+  // --- Стабільний інжект кнопки в хедер ---
+  const HEADER_SELECTORS = [
+    '#right-section-content',
+    'ytcp-header #right',
+    'ytcp-header #right-section',
+    'ytcp-header #right-container',
+    '#right-section',
+    '#right-content'
+  ];
+  function findHeaderContainer() {
+    for (const q of HEADER_SELECTORS) {
+      const el = document.querySelector(q);
+      if (el) return el;
     }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  function injectButton(container) {
+    return null;
+  }
+  function ensureHeaderButton() {
+    if (document.querySelector('#extract-button')) return;
+    const container = findHeaderContainer();
+    if (!container) return;
     const button = document.createElement('button');
     button.textContent = '📊 Дані';
     button.id = 'extract-button';
-    button.style = `
+    button.style.cssText = `
       margin-left: 10px;
       background-color: #3ea6ff;
       color: white;
@@ -145,28 +90,21 @@ ensureFloatingExtractButton();
       startCombinedDataCollection(true);
     };
     container.appendChild(button);
+    console.log('🔘 Інжектовано кнопку в хедер');
   }
+  ensureHeaderButton();
+  const headerObserver = new MutationObserver(() => ensureHeaderButton());
+  headerObserver.observe(document.body, { childList: true, subtree: true });
 
+  // --- Основна логіка збору ---
   function parseNumber(text) {
     if (!text) return '';
     const raw = text.replace(/\s/g, '').replace(',', '.').toLowerCase();
     if (raw.includes('%') || raw.match(/^\d+:\d+/)) return raw;
-
     let value = parseFloat(raw);
     if (isNaN(value)) return '';
-
-    // Конвертація тисяч
-    if (raw.includes('тыс') || raw.includes('тис') || raw.includes('k')) {
-      console.log(`🔢 Конвертую значення з тисяч у число: ${value}k -> ${value * 1000}`);
-      value = Math.round(value * 1000);
-    }
-
-    // Конвертація мільйонів
-    if (raw.includes('млн') || raw.includes('million') || raw.includes('mln') || raw.includes('мільй')) {
-      console.log(`🔢 Конвертую значення з мільйонів у число: ${value}M -> ${value * 1000000}`);
-      value = Math.round(value * 1000000);
-    }
-
+    if (raw.includes('тыс') || raw.includes('тис') || raw.includes('k')) value = Math.round(value * 1000);
+    if (raw.includes('млн') || raw.includes('million') || raw.includes('mln') || raw.includes('мільй')) value = Math.round(value * 1000000);
     return value;
   }
 
@@ -181,7 +119,7 @@ ensureFloatingExtractButton();
     }
   }
 
-  function waitForElement(selector, callback, logStep = '') {
+  function waitForElement(selector, callback) {
     const checkExist = setInterval(() => {
       const el = document.querySelector(selector);
       if (el) { clearInterval(checkExist); callback(el); }
@@ -213,40 +151,27 @@ ensureFloatingExtractButton();
     waitForElement('#content', (contentTab) => {
       contentTab.click();
       waitForElement('#metric-total', () => {
-        let remain = 3;
-        setButtonStatus(`⏱️ Контент [${remain}s]`);
-        const cntInt = setInterval(() => {
-          remain--;
-          if (remain > 0) setButtonStatus(`⏱️ Контент [${remain}s]`);
-          else clearInterval(cntInt);
-        }, 1000);
         setTimeout(() => { extractContentDataAndSend(); }, 3000);
       });
     });
   }
 
   function goToVideosAndExtractCount(contentMetrics) {
-    const selector = '#menu-paper-icon-item-1';
-    waitForElement(selector, (contentTab) => {
+    waitForElement('#menu-paper-icon-item-1', (contentTab) => {
       contentTab.click();
       waitForElement('.page-description', () => {
         const el = document.querySelector('.page-description');
         if (!el) return;
         const rawText = el.textContent || '';
-        const cleanedText = rawText.trim().replace(/\u00A0/g, ' ');
-        const match = cleanedText.match(/(?:из|of|з)\s*(?:примерно|approximately)?\s*(\d+)/i);
+        const match = rawText.match(/(?:из|of|з)\s*(?:примерно|approximately)?\s*(\d+)/i);
         if (!match || !match[1]) return;
         const total = parseInt(match[1].replace(/\s/g, ''), 10);
         if (isNaN(total)) return;
-
         const combinedData =
-  `${overviewChannel};${overviewDateUTC};${oSubscribers};${oViewsPeriod};${oHoursPeriod};${oViews48h};${overviewChannel};` +
-  `${contentMetrics.impressions};${contentMetrics.ctr}${'\u200B'};${contentMetrics.avgViewDuration}${'\u200B'};${contentDateUTC};${total}`;
-
-
+          `${overviewChannel};${overviewDateUTC};${oSubscribers};${oViewsPeriod};${oHoursPeriod};${oViews48h};${overviewChannel};` +
+          `${contentMetrics.impressions};${contentMetrics.ctr}${'\u200B'};${contentMetrics.avgViewDuration}${'\u200B'};${contentDateUTC};${total}`;
         console.log('📦 Об’єднані дані для відправки:', combinedData);
         setButtonStatus('✅ Контент');
-        setButtonStatus('✉️ Відправка');
         sendToSheet(combinedData, 'combined');
         setButtonStatus('✅ Готово');
       });
@@ -258,20 +183,16 @@ ensureFloatingExtractButton();
       try {
         const metricElems = document.querySelectorAll('.metric-value.style-scope.yta-latest-activity-card');
         const subscribers = parseNumber(metricElems[0]?.textContent || '0');
-        const views48h   = parseNumber(metricElems[1]?.textContent || '0');
-
+        const views48h = parseNumber(metricElems[1]?.textContent || '0');
         const totals = Array.from(document.querySelectorAll('#metric-total')).map(el => el.textContent.trim());
-        const viewsPeriod  = parseNumber(totals[0] || '0');
-        const hoursPeriod  = parseNumber(totals[1] || '0');
-
+        const viewsPeriod = parseNumber(totals[0] || '0');
+        const hoursPeriod = parseNumber(totals[1] || '0');
         overviewChannel = document.querySelector('#entity-name.entity-name')?.textContent.trim() || 'Без назви';
         overviewDateUTC = new Date().toISOString().split('T')[0];
-
-        oViews48h    = views48h;
+        oViews48h = views48h;
         oViewsPeriod = viewsPeriod;
         oHoursPeriod = hoursPeriod;
         oSubscribers = subscribers;
-
         setButtonStatus('✅ Загальна');
         if (typeof callback === 'function') callback();
       } catch (e) {
@@ -283,9 +204,9 @@ ensureFloatingExtractButton();
   function extractContentDataAndSend() {
     try {
       const totals = Array.from(document.querySelectorAll('#metric-total')).map(el => el.textContent.trim());
-      const impressions      = parseNumber(totals[1] || '');
-      const ctr              = parseNumber(totals[2] || '');
-      const avgViewDuration  = parseNumber(totals[3] || '');
+      const impressions = parseNumber(totals[1] || '');
+      const ctr = parseNumber(totals[2] || '');
+      const avgViewDuration = parseNumber(totals[3] || '');
       contentDateUTC = new Date().toISOString().split('T')[0];
       const contentMetrics = { impressions, ctr, avgViewDuration };
       goToVideosAndExtractCount(contentMetrics);
