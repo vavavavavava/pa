@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (v2.6 Auto Collect Fix)
 // @namespace    http://tampermonkey.net/
-// @version      2.7.13
+// @version      2.7.14
 // @description  Автоматичний збір даних з вкладок Overview + Content, статуси в кнопці, одна відправка (UTC), порядок полів за ТЗ, конвертація тыс/млн у числа з логом у консоль
 // @author       Вадим
 // @match        https://studio.youtube.com/*
@@ -31,8 +31,91 @@
 
   console.log('🟢 Скрипт завантажено');
 
+// ========================
+// UI helpers & static actions (added)
+// ========================
+
+// Robust removal of the "Sign out" menu item in the account menu.
+// Strategy: find any ytd-compact-link-renderer that contains a #subtitle with text "Вийти" or "Sign out" and remove the renderer entirely.
+// Надійне видалення "Вийти" тільки в меню акаунта
+function removeSignOutMenuItem() {
+  try {
+    // працюємо лише в контейнері попап-меню, щоб випадково не зачепити інші елементи
+    const menus = document.querySelectorAll('ytd-popup-container, tp-yt-paper-dialog, ytd-multi-page-menu-renderer');
+    menus.forEach(root => {
+      const link = root.querySelector(
+        'a[href*="/logout"], a[href^="https://www.youtube.com/logout"], a[href^="https://accounts.google.com/Logout"]'
+      );
+      if (link) {
+        const item = link.closest('ytd-compact-link-renderer, tp-yt-paper-item');
+        if (item) {
+          item.remove();
+          console.log('🗑️ Видалено пункт меню "Вийти" (за посиланням logout)');
+        }
+      }
+    });
+  } catch (e) {
+    console.warn('removeSignOutMenuItem error:', e);
+  }
+}
+
+// спрацьовує коли меню рендериться/оновлюється
+const signOutObserver = new MutationObserver(() => removeSignOutMenuItem());
+signOutObserver.observe(document.body, { childList: true, subtree: true });
+// перший прохід
+removeSignOutMenuItem();
+
+// Fallback: add a floating action button for data extraction in case header selectors change
+function ensureFloatingExtractButton() {
+  if (document.querySelector('#extract-button')) return; // already exists (header version)
+  if (document.querySelector('#extract-button-fab')) return; // floating already exists
+
+  const fab = document.createElement('button');
+  fab.id = 'extract-button-fab';
+  fab.textContent = '📊 Дані';
+  Object.assign(fab.style, {
+    position: 'fixed',
+    bottom: '16px',
+    left: '16px',
+    zIndex: '2147483647',
+    padding: '10px 14px',
+    fontWeight: 'bold',
+    borderRadius: '8px',
+    border: 'none',
+    cursor: 'pointer',
+  });
+  fab.style.backgroundColor = '#3ea6ff';
+  fab.style.color = '#ffffff';
+
+  // Reuse the same behavior as main button
+  fab.addEventListener('click', () => {
+    try {
+      console.log('🟡 Клік по FAB "Дані"');
+      setButtonStatus && setButtonStatus('📊 Дані');
+      forceCollect = true;
+      redirectedFromWrongTab = false;
+      startCombinedDataCollection(true);
+    } catch (e) {
+      console.warn('FAB click error:', e);
+    }
+  });
+
+  document.body.appendChild(fab);
+  console.log('➕ Додано плаваючу кнопку "Дані"');
+}
+
+// Watch for header presence but always ensure FAB exists as a fallback
+const fabObserver = new MutationObserver(() => ensureFloatingExtractButton());
+fabObserver.observe(document.body, { childList: true, subtree: true });
+// First pass on load
+ensureFloatingExtractButton();
+
   const observer = new MutationObserver(() => {
-    const headerContainer = document.querySelector('#right-section-content');
+    let headerContainer = document.querySelector('#right-section-content')
+                       || document.querySelector('#right-section')
+                       || document.querySelector('#right-content')
+                       || document.querySelector('ytcp-header #right')
+                       || document.querySelector('ytcp-header #right-container');
     if (headerContainer && !document.querySelector('#extract-button')) {
       console.log('🔘 Інжект кнопки...');
       injectButton(headerContainer);
