@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (v2.6 Auto Collect Fix)
 // @namespace    http://tampermonkey.net/
-// @version      2.7.12
+// @version      2.7.13
 // @description  Автоматичний збір даних з вкладок Overview + Content, статуси в кнопці, одна відправка (UTC), порядок полів за ТЗ, конвертація тыс/млн у числа з логом у консоль
 // @author       Вадим
 // @match        https://studio.youtube.com/*
@@ -151,7 +151,7 @@
         if (!el) return;
         const rawText = el.textContent || '';
         const cleanedText = rawText.trim().replace(/\u00A0/g, ' ');
-        const match = cleanedText.match(/(?:из|of)\s*(?:примерно|approximately)?\s*(\d+)/i);
+        const match = cleanedText.match(/(?:из|of|з)\s*(?:примерно|approximately)?\s*(\d+)/i);
         if (!match || !match[1]) return;
         const total = parseInt(match[1].replace(/\s/g, ''), 10);
         if (isNaN(total)) return;
