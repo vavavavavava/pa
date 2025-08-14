@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (No FAB, Remove Logout)
 // @namespace    http://tampermonkey.net/
-// @version      2.8.2
+// @version      2.8.3
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
@@ -82,10 +82,33 @@
   }
 
   function parseNumber(text) {
-    const s = String(text || '').replace(/\u00A0/g, ' ').replace(/\s/g, '').replace(/,/g, '.');
-    const m = s.match(/-?\d+(\.\d+)?/);
-    return m ? Number(m[0]) : 0;
-  }
+  const s = String(text || '').replace(/\u00A0/g, ' ').replace(/\s/g, '').replace(/,/g, '.');
+  const m = s.match(/-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : 0;
+}
+
+// Універсальний парсер з підтримкою "тыс./тис./k" і "млн/m" + очистка валютних символів
+function parseNumberWithUnits(raw) {
+  let text = String(raw || '')
+    .replace(/\u00A0/g, ' ')   // NBSP → пробіл
+    .trim()
+    .toLowerCase();
+
+  // прибираємо валютні символи
+  text = text.replace(/[$₴€₽]/g, '').trim();
+
+  // заміна коми на крапку для десяткових
+  const numMatch = text.replace(',', '.').match(/-?\d+(\.\d+)?/);
+  let base = numMatch ? parseFloat(numMatch[0]) : NaN;
+  if (isNaN(base)) return 0;
+
+  // множники
+  if (/(тыс|тис|k)\.?/.test(text)) base *= 1000;
+  if (/(млн|m)\.?/.test(text))     base *= 1_000_000;
+
+  return base;
+}
+
 
   function removeSignOutMenuItem() {
     try {
@@ -181,12 +204,13 @@ function clickContentTab() {
             waitForElement('.metric-value.style-scope.yta-latest-activity-card', () => {
               try {
                 const metricElems = document.querySelectorAll('.metric-value.style-scope.yta-latest-activity-card');
-                const subscribers = parseNumber(metricElems[0]?.textContent || '0');
-                const views48h = parseNumber(metricElems[1]?.textContent || '0');
+                const subscribers = parseNumber(metricElems[0]?.textContent || '0');  // залишаємо базовий парсер
+                const views48h = parseNumber(metricElems[1]?.textContent || '0');     // залишаємо базовий парсер
 
+                // totals: [0] = views (за період), [1] = watch hours (за період)
                 const totals = Array.from(document.querySelectorAll('#metric-total')).map(el => (el.textContent || '').trim());
-                const viewsPeriod = parseNumber(totals[0] || '0');
-                const hoursPeriod = parseNumber(totals[1] || '0');
+                const viewsPeriod = parseNumberWithUnits(totals[0] || '0');  // підтримка тыс/млн
+                const hoursPeriod = parseNumberWithUnits(totals[1] || '0');  // підтримка тыс/млн
 
                 overviewChannel = document.querySelector('#entity-name.entity-name')?.textContent.trim() || 'Без назви';
                 overviewDateUTC = new Date().toISOString().split('T')[0];
@@ -195,25 +219,19 @@ function clickContentTab() {
                 oHoursPeriod = hoursPeriod;
                 oSubscribers = subscribers;
 
-               // підрахунок блоків yta-key-metric-block
-                  const blocks = document.querySelectorAll('div#container.layout.vertical.style-scope.yta-key-metric-block');
-                  monetization = (blocks.length === 4); // 3 → false, 4 → true
-                  if (blocks[3]) {
-                      const m = blocks[3].querySelector('#metric-total');
-                      let val = (m?.textContent || blocks[3].innerText || '').trim();
+                // підрахунок блоків yta-key-metric-block + 4-й блок (дохід)
+                const blocks = document.querySelectorAll('div#container.layout.vertical.style-scope.yta-key-metric-block');
+                monetization = (blocks.length === 4); // 3 → false, 4 → true
+                if (blocks[3]) {
+                  const m = blocks[3].querySelector('#metric-total');
+                  let val = (m?.textContent || blocks[3].innerText || '').trim();
+                  // одразу нормалізуємо (прибирає $, конвертує тыс/млн)
+                  fourthMetric = String(parseNumberWithUnits(val));
+                } else {
+                  fourthMetric = '0';
+                }
 
-                      // видаляємо $, ₴, €, ₽ та пробіли навколо
-                      val = val.replace(/[$₴€₽]/g, '').trim();
-
-                      if (!val || /^[-–—]+$/.test(val)) { // пусто або лише тире
-                          val = '0';
-                      }
-                      fourthMetric = val;
-                  } else {
-                      fourthMetric = '';
-                  }
-
-                dlog('Overview OK:', { overviewChannel, oSubscribers, oViews48h, oViewsPeriod, oHoursPeriod, monetization, fourthMetric });
+                dlog('Overview OK (normalized):', { overviewChannel, oSubscribers, oViews48h, oViewsPeriod, oHoursPeriod, monetization, fourthMetric });
                 setButtonStatus('✅ Загальна');
                 if (typeof callback === 'function') callback();
               } catch (e) {
@@ -225,7 +243,7 @@ function clickContentTab() {
         });
       } catch (e) {
         derr('extractOverviewData period click error (fallback без Lifetime):', e);
-        // Фолбек: парсимо без зміни періоду
+        // Фолбек: парсимо без зміни періоду (але з тією ж нормалізацією значень)
         waitForElement('.metric-value.style-scope.yta-latest-activity-card', () => {
           try {
             const metricElems = document.querySelectorAll('.metric-value.style-scope.yta-latest-activity-card');
@@ -233,8 +251,8 @@ function clickContentTab() {
             const views48h = parseNumber(metricElems[1]?.textContent || '0');
 
             const totals = Array.from(document.querySelectorAll('#metric-total')).map(el => (el.textContent || '').trim());
-            const viewsPeriod = parseNumber(totals[0] || '0');
-            const hoursPeriod = parseNumber(totals[1] || '0');
+            const viewsPeriod = parseNumberWithUnits(totals[0] || '0');
+            const hoursPeriod = parseNumberWithUnits(totals[1] || '0');
 
             overviewChannel = document.querySelector('#entity-name.entity-name')?.textContent.trim() || 'Без назви';
             overviewDateUTC = new Date().toISOString().split('T')[0];
@@ -248,15 +266,12 @@ function clickContentTab() {
             if (blocks[3]) {
               const m = blocks[3].querySelector('#metric-total');
               let val = (m?.textContent || blocks[3].innerText || '').trim();
-              if (!val || /^[-–—]+$/.test(val)) {
-                val = '0';
-              }
-              fourthMetric = val;
+              fourthMetric = String(parseNumberWithUnits(val));
             } else {
-              fourthMetric = '';
+              fourthMetric = '0';
             }
 
-            dlog('Overview Fallback OK:', { monetization, fourthMetric });
+            dlog('Overview Fallback OK (normalized):', { monetization, fourthMetric });
             setButtonStatus('✅ Загальна');
             if (typeof callback === 'function') callback();
           } catch (e2) {
@@ -318,14 +333,22 @@ function parseMetric(raw, type) {
 
 function extractContentDataAndSend() {
   try {
-    // Порядок блоків на /analytics/tab-content:
-    // [0] Просмотры, [1] ПоказЫ (impressions), [2] CTR, [3] Средняя продолжительность просмотра
+    // Порядок на /analytics/tab-content:
+    // [0] Views, [1] Impressions, [2] CTR, [3] Average view duration
     const totals = Array.from(document.querySelectorAll('#metric-total'))
       .map(el => (el.textContent || '').trim());
 
-    const impressions      = parseMetric(totals[1] || '', 'impr'); // 657,1 тыс. → 657100
-    const ctr              = parseMetric(totals[2] || '', 'ctr');  // 7,9 % → 7.9%
-    const avgViewDuration  = parseMetric(totals[3] || '', 'avg');  // 5:08 → 5:08
+    // Impressions з підтримкою тыс./млн (k/m)
+    const impressions = parseNumberWithUnits(totals[1] || '0');
+
+    // CTR завжди з відсотком (7.9%)
+    const ctrText = (totals[2] || '').replace(/\u00A0/g, ' ').trim().toLowerCase();
+    const ctrNumMatch = ctrText.replace(',', '.').match(/-?\d+(\.\d+)?/);
+    const ctr = ctrNumMatch ? `${(+ctrNumMatch[0]).toFixed(/[.,]\d/.test(ctrText) ? 1 : 0)}%` : '';
+
+    // Average view duration у форматі m:ss — залишаємо як є, якщо такий формат
+    const avgRaw = (totals[3] || '').trim();
+    const avgViewDuration = /^\d{1,2}:[0-5]\d$/.test(avgRaw) ? avgRaw : avgRaw;
 
     contentDateUTC = new Date().toISOString().split('T')[0];
     const contentMetrics = { impressions, ctr, avgViewDuration };
@@ -337,9 +360,6 @@ function extractContentDataAndSend() {
     setButtonStatus('❌ Помилка');
   }
 }
-
-
-
 
   function goToVideosAndExtractCount(contentMetrics) {
   dlog('Відкриваємо головне меню "Контент" (клік)…');
