@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (No FAB, Remove Logout)
 // @namespace    http://tampermonkey.net/
-// @version      2.8.5
+// @version      2.8.6
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
@@ -183,7 +183,7 @@ function setOmniSearchStatus(statusText) {
       font-weight: 500;
       font-size: 14px;
       line-height: 1;
-
+    
       justify-content: center;
       gap: 0;
     }
@@ -195,7 +195,7 @@ function setOmniSearchStatus(statusText) {
       display: inline-flex; align-items: center; justify-content: center;
       padding: 4px 8px; border-radius: 999px; font-weight: 600;
       border: 1px solid transparent; line-height: 1;
-
+    
       width: 100%;
       text-align: center;
       justify-content: center;
