@@ -10,51 +10,6 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-
-
-(function yseInjectChipCss(){
-  if (document.getElementById('yse-badge-css')) return;
-  const style = document.createElement('style');
-  style.id = 'yse-badge-css';
-  style.textContent = `
-    .yse-search-override > *:not(#yse-status-overlay){
-      visibility: hidden !important;
-    }
-    #yse-status-overlay{
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      pointer-events: none;
-      box-sizing: border-box;
-    }
-    #yse-status-overlay .yse-chip{
-      width: 100%;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-sizing: border-box;
-      font-weight: 700;
-      font-size: 15px;
-      line-height: 1;
-      border: 1px solid transparent;
-      padding: 0 14px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      border-radius: inherit;
-    }
-    .yse-chip-blue   { color:#3b82f6; background:rgba(59,130,246,.12); border-color:rgba(59,130,246,.25); }
-    .yse-chip-green  { color:#22c55e; background:rgba(34,197,94,.12);  border-color:rgba(34,197,94,.25); }
-    .yse-chip-orange { color:#f59e0b; background:rgba(245,158,11,.12); border-color:rgba(245,158,11,.25); }
-    .yse-chip-red    { color:#ef4444; background:rgba(239,68,68,.12);  border-color:rgba(239,68,68,.25); }
-    .yse-chip-gray   { color:#9ca3af; background:rgba(156,163,175,.12);border-color:rgba(156,163,175,.25); }
-  `;
-  document.head.appendChild(style);
-})();
-
 (function () {
   'use strict';
 
@@ -228,6 +183,9 @@ function setOmniSearchStatus(statusText) {
       font-weight: 500;
       font-size: 14px;
       line-height: 1;
+
+      justify-content: center;
+      gap: 0;
     }
     .yse-search-icon {
       width: 20px; height: 20px; flex: 0 0 20px;
@@ -237,6 +195,11 @@ function setOmniSearchStatus(statusText) {
       display: inline-flex; align-items: center; justify-content: center;
       padding: 4px 8px; border-radius: 999px; font-weight: 600;
       border: 1px solid transparent; line-height: 1;
+
+      width: 100%;
+      text-align: center;
+      justify-content: center;
+      padding: 6px 0;
     }
     /* кольори чипа */
     .yse-chip-green  { color: #22c55e; background: rgba(34,197,94,0.12);  border-color: rgba(34,197,94,0.25); }
@@ -246,6 +209,7 @@ function setOmniSearchStatus(statusText) {
     .yse-chip-gray   { color: #9ca3af; background: rgba(156,163,175,0.12);border-color: rgba(156,163,175,0.25); }
 
     .yse-status-text { opacity: .92; }
+    .yse-badge-search.yse-no-bg { background: transparent !important; border: none !important; }
   `;
   const style = document.createElement('style');
   style.id = 'yse-badge-styles';
@@ -266,6 +230,7 @@ function yseGetStatusColorClass(statusText = '') {
   return 'yse-blue';
 }
 // === Helpers added to fix ReferenceError & style copy ===
+// Map color class name to chip class name, e.g. "yse-green" -> "yse-chip-green"
 const yseGetStatusChipClass = (statusText = '') => {
   try {
     const base = yseGetStatusColorClass(statusText); // returns yse-green / yse-orange / ...
@@ -275,6 +240,7 @@ const yseGetStatusChipClass = (statusText = '') => {
   }
 };
 
+// Copy size/rounded/padding from the search layer so our badge matches the search field look
 function yseApplyBoxLookFromLayer(layer, box) {
   try {
     if (!layer || !box) return;
@@ -290,6 +256,7 @@ function yseApplyBoxLookFromLayer(layer, box) {
         box.style.border = cs.border;
       }
     }
+    // Also try to mirror the inner input styles if present
     const inp = layer.querySelector('input, #query-input');
     if (inp) {
       const ci = getComputedStyle(inp);
@@ -302,66 +269,20 @@ function yseApplyBoxLookFromLayer(layer, box) {
   } catch (_) { /* no-op */ }
 }
 
+
 // Створення/оновлення кастомного бейджа замість інпута пошуку
 // Замінює контент у #search-layer на наш бейдж-статус (без видалення вузла)
-function setOmniSearchBadge(statusText){
-  try{
-    const targets = [
-      'div#search-layer.style-scope.ytcp-omnisearch',
-      'ytcp-omnisearch #search-layer',
-      'ytcp-omnisearch',
-      '#search-input, ytcp-search-input'
-    ];
-    waitForElement(targets.join(','), (layer)=>{
-      const host = (layer.matches && layer.matches('ytcp-omnisearch')) ? (layer.querySelector('#search-layer') || layer) : layer;
-      if (!host) return;
+function setOmniSearchBadge(statusText) {
+  try {
+    waitForElement('div#search-layer.style-scope.ytcp-omnisearch', (layer) => {
+      if (!layer) return;
 
-      const csHost = getComputedStyle(host);
-      if (csHost.position === 'static') host.style.position = 'relative';
-
-      host.classList.add('yse-search-override');
-
-      let overlay = host.querySelector('#yse-status-overlay');
-      if (!overlay){
-        overlay = document.createElement('div');
-        overlay.id = 'yse-status-overlay';
-        host.appendChild(overlay);
-      }
-
-      const ref = Array.from(host.children).find(ch => ch !== overlay && getComputedStyle(ch).display !== 'none') || host;
-      overlay.style.borderRadius = getComputedStyle(ref).borderRadius || '24px';
-
-      let chip = overlay.querySelector('.yse-chip');
-      if (!chip){
-        chip = document.createElement('span');
-        chip.className = 'yse-chip';
-        overlay.appendChild(chip);
-      }
-
-      const lc = String(statusText || '').toLowerCase();
-      const colorClass =
-        lc.includes('топ') ? 'yse-chip-green' :
-        lc.includes('гуд') ? 'yse-chip-orange' :
-        lc.includes('норм') ? 'yse-chip-blue' :
-        (lc.includes('заміна') || lc.includes('тінь')) ? 'yse-chip-red' :
-        'yse-chip-blue';
-
-      chip.className = `yse-chip ${colorClass}`;
-      chip.textContent = statusText;
-
-      const ro = new ResizeObserver(()=>{
-        overlay.style.borderRadius = getComputedStyle(ref).borderRadius || '24px';
-      });
-      ro.observe(ref);
-    }, 10000);
-  }catch(err){
-    console.error('[YSE] setOmniSearchBadge error:', err);
-  }
-}
+      // 1) сховати всі штатні елементи пошуку
+      Array.from(layer.childNodes || []).forEach((n) => { if (n && n.style) n.style.display = 'none'; });
 
       // 2) створити/оновити наш бокс
       let box = layer.querySelector('#yse-status-box');
-      const chipClass = yseGetStatusColorClass(statusText);
+      const chipClass = yseGetStatusChipClass(statusText);
 
       if (!box) {
         box = document.createElement('div');
@@ -408,6 +329,7 @@ function setOmniSearchBadge(statusText){
         }
       }
 
+      if (statusText && box) { box.classList.add('yse-no-bg'); }
       dlog('OmniSearch: замінено на чип статусу без іконки:', statusText);
     }, 10000);
   } catch (e) {
