@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (No FAB, Remove Logout)
 // @namespace    http://tampermonkey.net/
-// @version      2.8.6
+// @version      2.8.7
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
@@ -40,6 +40,16 @@
   // ---------- утиліти ----------
   function getExtractButton() { return document.querySelector('#extract-button'); }
   function setButtonStatus(text) { const btn = getExtractButton(); if (btn) btn.textContent = text; }
+
+  // 🆕 Дата за часовим поясом Лос-Анджелеса у форматі YYYY-MM-DD
+  function getDateInLA() {
+    const laDate = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
+    const d = new Date(laDate);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
 
   const HEADER_SELECTORS = [
     '#right-section-content',
@@ -478,7 +488,7 @@ function setOmniSearchBadge(statusText) {
                   const hoursPeriod = parseNumberWithUnits(totals[1] || '0');  // підтримка тыс/млн
 
                   overviewChannel = document.querySelector('#entity-name.entity-name')?.textContent.trim() || 'Без назви';
-                  overviewDateUTC = new Date().toISOString().split('T')[0];
+                  overviewDateUTC = getDateInLA(); // 🆕 LA date
                   oViews48h = views48h;
                   oViewsPeriod = viewsPeriod;
                   oHoursPeriod = hoursPeriod;
@@ -520,7 +530,7 @@ function setOmniSearchBadge(statusText) {
               const hoursPeriod = parseNumberWithUnits(totals[1] || '0');
 
               overviewChannel = document.querySelector('#entity-name.entity-name')?.textContent.trim() || 'Без назви';
-              overviewDateUTC = new Date().toISOString().split('T')[0];
+              overviewDateUTC = getDateInLA(); // 🆕 LA date (fallback)
               oViews48h = views48h;
               oViewsPeriod = viewsPeriod;
               oHoursPeriod = hoursPeriod;
@@ -617,7 +627,7 @@ function setOmniSearchBadge(statusText) {
       const avgRaw = (totals[3] || '').trim();
       const avgViewDuration = /^\d{1,2}:[0-5]\d$/.test(avgRaw) ? avgRaw : avgRaw;
 
-      contentDateUTC = new Date().toISOString().split('T')[0];
+      contentDateUTC = getDateInLA(); // 🆕 LA date
       const contentMetrics = { impressions, ctr, avgViewDuration };
 
       dlog('Content metrics (normalized):', contentMetrics);
