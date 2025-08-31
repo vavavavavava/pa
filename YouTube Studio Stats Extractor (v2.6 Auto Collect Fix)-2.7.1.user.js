@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Studio Stats Extractor (No FAB, Remove Logout)
 // @namespace    http://tampermonkey.net/
-// @version      2.8.8
+// @version      2.8.9
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
@@ -769,222 +769,320 @@ setOmniSearchBadge(autoStatus);
   removeSignOutMenuItem();
 
   dlog('Script ready');
-   /* === LangBadge add-on (tinyld + smart fallback, ::after inline, 2025-08) ===
-     Що робить:
-       • Додає прапор + назву мови справа від тайтлу як псевдоконтент ::after
-       • Працює в двох місцях:
-           1) ytd-account-item-renderer #channel-title (дроплист акаунтів)
-           2) #entity-name (лівий дровер)
-       • Не ламає верстку: без чіпів, без додаткових елементів, ширина тайтлу
-         штучно розширюється під "Назва + Мова".
-     Детектор:
-       • Спершу tinyld (UMD) з @require
-       • Якщо tinyld недоступний/повернув 'la'/'und' — локальна евристика (DE/IT/EN + кирилиця)
-  ============================================================================ */
+/* === LangBadge add-on (tinyld + tuned heuristics + ::after/float, 2025-08) =====
+   Показує праворуч від назви: <FLAG> <Language>.
+   1) ::after без дод. вузлів; 2) якщо ::after не видно — абсолютний float збоку.
+   @require https://cdn.jsdelivr.net/npm/tinyld/dist/tinyld.min.js
+=============================================================================== */
 
-  // ====== мапи назв і прапорів (ISO 639-1) ==================================
-  const ISO2_TO_LABEL = {
-    uk:'Ukrainian', ru:'Russian', be:'Belarusian', bg:'Bulgarian',
-    pl:'Polish', cs:'Czech', sk:'Slovak', sl:'Slovenian',
-    hr:'Croatian', sr:'Serbian', mk:'Macedonian',
-    en:'English', de:'German', nl:'Dutch', fr:'French', es:'Spanish',
-    pt:'Portuguese', it:'Italian', ro:'Romanian', hu:'Hungarian',
-    tr:'Turkish', ar:'Arabic', he:'Hebrew', el:'Greek',
-    ja:'Japanese', ko:'Korean', zh:'Chinese',
-    vi:'Vietnamese', id:'Indonesian', ms:'Malay', th:'Thai'
-  };
-  const iso2Label = (code) => ISO2_TO_LABEL[code] || (code ? code.toUpperCase() : 'Unknown');
+const ISO2_TO_LABEL = {
+  ja:'Japanese', pl:'Polish', de:'German', ar:'Arabic', nl:'Dutch',
+  es:'Spanish', ru:'Russian', tr:'Turkish', pt:'Portuguese', it:'Italian',
+  zh:'Chinese', ko:'Korean', ro:'Romanian', el:'Greek', uk:'Ukrainian',
+  id:'Indonesian', hu:'Hungarian', en:'English', hi:'Hindi', fi:'Finnish',
+  he:'Hebrew', no:'Norwegian', ms:'Malay', sv:'Swedish', fr:'French',
+  cs:'Czech', tl:'Filipino', sr:'Serbian', th:'Thai', da:'Danish', vi:'Vietnamese'
+};
+const LANG_FLAG = {
+  ja:'🇯🇵', pl:'🇵🇱', de:'🇩🇪', ar:'🇸🇦', nl:'🇳🇱',
+  es:'🇪🇸', ru:'🇷🇺', tr:'🇹🇷', pt:'🇵🇹', it:'🇮🇹',
+  zh:'🇨🇳', ko:'🇰🇷', ro:'🇷🇴', el:'🇬🇷', uk:'🇺🇦',
+  id:'🇮🇩', hu:'🇭🇺', en:'🇺🇸', hi:'🇮🇳', fi:'🇫🇮',
+  he:'🇮🇱', no:'🇳🇴', ms:'🇲🇾', sv:'🇸🇪', fr:'🇫🇷',
+  cs:'🇨🇿', tl:'🇵🇭', sr:'🇷🇸', th:'🇹🇭', da:'🇩🇰', vi:'🇻🇳'
+};
+const iso2Label = c => ISO2_TO_LABEL[c] || (c ? c.toUpperCase() : 'Unknown');
+const flagFor   = c => LANG_FLAG[c]     || '🌐';
 
-  const LANG_FLAG = {
-    de:'🇩🇪', it:'🇮🇹', en:'🇬🇧', uk:'🇺🇦', ru:'🇷🇺', pl:'🇵🇱', cs:'🇨🇿', sk:'🇸🇰',
-    sl:'🇸🇮', hr:'🇭🇷', sr:'🇷🇸', mk:'🇲🇰', nl:'🇳🇱', fr:'🇫🇷', es:'🇪🇸', pt:'🇵🇹',
-    ro:'🇷🇴', hu:'🇭🇺', tr:'🇹🇷', ar:'🇸🇦', he:'🇮🇱', el:'🇬🇷', ja:'🇯🇵', ko:'🇰🇷',
-    zh:'🇨🇳', vi:'🇻🇳', id:'🇮🇩', ms:'🇲🇾', th:'🇹🇭'
-  };
-  const flagFor = (code) => LANG_FLAG[code] || '🌐';
+// safe normalize
+function safeNormalize(str, form='NFC'){ try{return String(str).normalize(form);}catch{return String(str);} }
+function normalizeText(raw){
+  return safeNormalize(raw,'NFC')
+    .replace(/[\u2019\u2018\u2032\u00B4\u0060]/g,"'") // ’ ‘ ′ ´ `
+    .toLowerCase();
+}
 
-  // ====== tinyld детектор (UMD як функція або об'єкт із .detect) =============
-  function getDetector() {
-    const t = window.tinyld;
-    if (!t) return null;
-    if (typeof t === 'function') return { detect: (txt) => t(txt) };
-    if (typeof t.detect === 'function') return t;
-    return null;
+// tinyld UMD
+function getDetector(){
+  const t = window.tinyld;
+  if(!t) return null;
+  if(typeof t === 'function') return { detect:(txt)=>t(txt) };
+  if(typeof t.detect === 'function') return t;
+  return null;
+}
+
+/* ================= Heuristics (return ISO2 or null) ================== */
+// scripts
+const RE_AR   = /[\u0600-\u06FF]/;
+const RE_HE   = /[\u0590-\u05FF]/;
+const RE_EL   = /[\u0370-\u03FF]/;
+const RE_CYR  = /[\u0400-\u04FF]/;
+const RE_UA   = /[ІіЇїЄєҐґ]/;
+const RE_DEV  = /[\u0900-\u097F]/;
+const RE_THAI = /[\u0E00-\u0E7F]/;
+const RE_HANG = /[\uAC00-\uD7AF]/;
+const RE_HIRA = /[\u3040-\u309F]/;
+const RE_KATA = /[\u30A0-\u30FF]/;
+const RE_HAN  = /[\u3400-\u9FFF\uF900-\uFAFF]/;
+
+// latin diacritics
+const RE_DE   = /[äöüß]/i;
+const RE_IT   = /[àèéìíîòóù]/i;
+const RE_FR   = /[àâçéèêëîïôûùüÿ]/i;
+const RE_RO   = /[ăâîșşţț]/i;
+const RE_PL   = /[ąćęłńóśźż]/i;
+const RE_CZ   = /[ěščřžýáíéůú]/i;
+const RE_HU   = /[áéíóöőúüű]/i;
+const RE_SV   = /[åäö]/i;
+const RE_NO_DA= /[æøå]/i;
+const RE_PT   = /[ãõáâàéêíóôúç]/i;
+const RE_ES   = /[áéíóúñü]/i;
+const RE_VI   = /[ăâêôơưđĂÂÊÔƠƯĐ]/;
+
+// ⚠️ Turkish: strict set — БЕЗ ö/ü (щоб не чіпати німецьку)
+const RE_TR_STRICT = /[ğşıİç]/i;
+
+// keywords
+const KW_DE = /\b(die|der|das|des|und|zum|vom|über|mit|für|ohne|leben|stille|wahrheiten|momente|erinnerungen|schicksal|bruchst[üu]cke)\b/i;
+const KW_IT = /\b(di|gli|le|la|lo|il|un|una|uno|nelle|delle|degli|sotto|tra|fra|con|per|che|oltre)\b|emozion/i;
+const SUF_IT= /(zione|zioni|mente)\b/i;
+
+const KW_ES = /\b(de|del|la|el|que|sin|entre|lo)\b|verdad|momentos|cuentan|cuenta/i;
+const KW_PT = /\b(de|do|da|dos|das|que)\b|verdade|coração|histórias|instantes|vozes|vida\b/i;
+
+const KW_TR = /\b(hayat(?:ın)?|yaşam(?:ın)?|gerçek|hikaye(?:si|ler[ie]?)|gece|itiraf(?:ları)?|söylenmeyen|geç|kalm[ıi]ş|kırık|parçalar[ıi]|gönülden|sözler|hikayeler)\b/i;
+
+const KW_NL = /\b(de|het|van|en)\b|verhalen|waarheid|levens|kleine|grote|ongezegde/i;
+const KW_EN = /\b(the|and|with|for|of|that)\b|stories|moments|truth/i;
+const KW_RO = /inim[ăa]|via[ţț]a|f[aă]r[aă]|emo[țt]ii|n[eé]spuse|voc[iile]|glasul|voci(?:le)?/i;
+const KW_ID = /\b(kisah|cerita|kehidupan|benar|rahasia|yang|tak|terucap|suara|hati|jiwa|hidup)\b/i;
+const KW_MS = /\b(cerita|hidup|suara|kehidupan|benar)\b/i;
+const KW_TL = /\b(totoong|kwento|buhay|mga|tadhana|alaala|piraso)\b/i;
+const KW_SV = /\b(från|hjärtat|sanna)\b/i;
+const KW_NO = /\b(kjærlighet|livet|øyeblikk|ord|fra)\b/i;
+const KW_DA = /\b(uden|livet|ord|fra)\b/i;
+const KW_SR_LAT = /[čćđšž]|\bpri[čc]e\b|\biz\b/i;
+
+function heuristicLangCode(textRaw){
+  const t = (' ' + normalizeText(textRaw) + ' ').replace(/\s+/g,' ');
+
+  // scripts
+  if (RE_AR.test(t))   return 'ar';
+  if (RE_HE.test(t))   return 'he';
+  if (RE_EL.test(t))   return 'el';
+  if (RE_DEV.test(t))  return 'hi';
+  if (RE_THAI.test(t)) return 'th';
+  if (RE_HANG.test(t)) return 'ko';
+  if (RE_HIRA.test(t) || RE_KATA.test(t)) return 'ja';
+  if (RE_HAN.test(t))  return 'zh';
+  if (RE_CYR.test(t))  return RE_UA.test(t) ? 'uk' : 'ru';
+  if (RE_VI.test(t))   return 'vi';
+
+  // German (спочатку DE, щоб не перехопив TR)
+  if (RE_DE.test(t) || KW_DE.test(t)) return 'de';
+
+  // Italian
+  if (RE_IT.test(t) || KW_IT.test(t) || SUF_IT.test(t)) return 'it';
+
+  // Portuguese / Spanish
+  if (RE_PT.test(t) || KW_PT.test(t)) return 'pt';
+  if (RE_ES.test(t) || KW_ES.test(t)) return 'es';
+
+  // Turkish — тільки strict букви або явні ключі
+  if (RE_TR_STRICT.test(t) || KW_TR.test(t)) return 'tr';
+
+  // інші латиниці
+  if (RE_FR.test(t)) return 'fr';
+  if (RE_RO.test(t) || KW_RO.test(t)) return 'ro';
+  if (RE_PL.test(t)) return 'pl';
+  if (RE_CZ.test(t)) return 'cs';
+  if (RE_HU.test(t)) return 'hu';
+
+  if (RE_SV.test(t) || KW_SV.test(t)) return 'sv';
+  if (RE_NO_DA.test(t)) {
+    if (KW_NO.test(t)) return 'no';
+    if (KW_DA.test(t)) return 'da';
+    if (/kj[æa]rl/.test(t)) return 'no';
+    if (/uden/.test(t)) return 'da';
+    return 'no';
   }
 
-  // ====== евристики (DE/IT/EN + кирилиця, діакритика, стоп-слова) ============
-  const DE_MARKERS = [' der ',' die ',' das ',' und ',' mit ',' für ',' nicht ',' berühren ',' glück ',' zum ',' vom ',' einem ',' einer ',' über '];
-  const IT_MARKERS = [' di ',' e ',' la ',' le ',' gli ',' delle ',' degli ',' nelle ',' emozioni ',' nascosto ',' nascoste ',' sotto ',' tra '];
-  const EN_MARKERS = [' and ',' with ',' for ',' the ',' hidden ',' moment ',' touch '];
-  const DE_DIACRITICS = /[äöüß]/i;
-  const IT_DIACRITICS = /[àèéìíîòóù]/i;
-  const HAS_CYRILLIC = /[А-Яа-яЁёІіЇїЄєҐґ]/;
+  if (KW_NL.test(t))  return 'nl';
+  if (KW_TL.test(t))  return 'tl';
+  if (KW_ID.test(t))  return 'id';
+  if (KW_MS.test(t))  return 'ms';
+  if (KW_SR_LAT.test(t)) return 'sr';
+  if (KW_EN.test(t))  return 'en';
 
-  function scoreByMarkers(text, markers) { let s=0; for (const m of markers) if (text.includes(m)) s++; return s; }
-  function heuristicLangCode(textRaw) {
-    const t = ' ' + String(textRaw || '').toLowerCase().normalize('NFC') + ' ';
-    if (HAS_CYRILLIC.test(t)) return 'uk';
-    if (DE_DIACRITICS.test(t)) return 'de';
-    if (IT_DIACRITICS.test(t)) return 'it';
-    if (/\b(die|der|zum|vom|über)\b/.test(t)) return 'de';
-    if (/\b(di|gli|delle|degli|nascoste|emozioni)\b/.test(t)) return 'it';
-    const de = scoreByMarkers(t, DE_MARKERS);
-    const it = scoreByMarkers(t, IT_MARKERS);
-    const en = scoreByMarkers(t, EN_MARKERS);
-    if (de > it && de >= 1) return 'de';
-    if (it > de && it >= 1) return 'it';
-    if (en >= 2 && en >= de && en >= it) return 'en';
-    return null;
-  }
+  return null;
+}
 
-  // ====== основне визначення мови (код + назва + прапор) =====================
-  function detectLang(text) {
-    const clean = String(text || '').replace(/\s+/g, ' ').trim();
-    if (!clean) return { label:'Unknown', code:null, flag:'🌐' };
-
-    if (clean.length <= 3) {
-      if (HAS_CYRILLIC.test(clean)) return { label:'Ukrainian', code:'uk', flag:flagFor('uk') };
-      return { label:'Unknown', code:null, flag:'🌐' };
-    }
-
-    // 1) tinyld
-    try {
-      const det = getDetector();
-      if (det) {
-        const out = det.detect(clean);
-        let code = null;
-        if (typeof out === 'string') code = out;
-        else if (Array.isArray(out) && out[0]) code = out[0].lang || out[0].code || out[0].language;
-        else if (out && typeof out === 'object') code = out.lang || out.code || out.language;
-        if (code && code !== 'la' && code !== 'und' && code !== 'xx') {
-          return { label: iso2Label(code), code, flag: flagFor(code) };
-        }
-      }
-    } catch {}
-
-    // 2) локальна евристика
-    const h = heuristicLangCode(clean);
-    if (h) return { label: iso2Label(h), code: h, flag: flagFor(h) };
-
+/* ========================== Final detect =========================== */
+function detectLang(text){
+  const clean = safeNormalize(text,'NFC').replace(/\s+/g,' ').trim();
+  if(!clean) return { label:'Unknown', code:null, flag:'🌐' };
+  if (clean.length <= 3) {
+    if (RE_CYR.test(clean)) return { label:'Ukrainian', code:'uk', flag:flagFor('uk') };
     return { label:'Unknown', code:null, flag:'🌐' };
   }
 
-  // ====== стилі: ::after + розширення блоку назви під "Назва + Мова" =========
-  (function injectLangInlineAfterStyles(){
-    if (document.getElementById('yse-lang-inline-after')) return;
-    const style = document.createElement('style');
-    style.id = 'yse-lang-inline-after';
-    style.textContent = `
-      /* робимо сам тайтл гнучким під «Назва + Мова» */
-      ytd-account-item-renderer #channel-title,
-      #entity-name.entity-name {
-        display: inline-block !important;
-        width: auto !important;
-        max-width: none !important;
-        white-space: nowrap !important;
-        vertical-align: baseline !important;
+  try{
+    const det = getDetector();
+    if(det){
+      const out = det.detect(clean);
+      let code = null;
+      if (typeof out === 'string') code = out.toLowerCase();
+      else if (Array.isArray(out) && out[0]) code = (out[0].lang||out[0].code||out[0].language||'').toLowerCase();
+      else if (out && typeof out === 'object') code = (out.lang||out.code||out.language||'').toLowerCase();
+      if (code && ISO2_TO_LABEL[code]) {
+        return { label: iso2Label(code), code, flag: flagFor(code) };
       }
-      /* показуємо праворуч прапор + назву мови як псевдоконтент */
-      ytd-account-item-renderer #channel-title[data-lang-label]::after,
-      #entity-name.entity-name[data-lang-label]::after {
-        content: " " attr(data-lang-label);
-        font: 500 11px/1.2 Roboto, Arial, sans-serif;
-        white-space: nowrap;
-        opacity: .85;
-        margin-left: 6px;
-      }
-    `;
-    document.head.appendChild(style);
-  })();
-
-  // ====== записуємо лейбл у data-атрибут (ніяких нових DOM-вузлів) ===========
-  function setInlineAfterLabel(targetEl, langObj){
-    if (!targetEl || !langObj) return;
-    targetEl.setAttribute('data-lang-label', `${langObj.flag} ${langObj.label}`);
-  }
-
-  // ====== readiness helpers ==================================================
-  function waitFor(condFn, onOk, timeoutMs = 12000, intervalMs = 120) {
-    const t0 = Date.now();
-    const iv = setInterval(() => {
-      try { if (condFn()) { clearInterval(iv); onOk(); }
-            else if (Date.now() - t0 > timeoutMs) { clearInterval(iv); } }
-      catch { clearInterval(iv); }
-    }, intervalMs);
-  }
-  function waitForStableText(el, onStable, minLen = 2, quietMs = 200, timeoutMs = 8000) {
-    let last = (el.textContent || '').trim();
-    if (last.length >= minLen) {
-      let timer = setTimeout(() => onStable(el), quietMs);
-      const mo = new MutationObserver(() => {
-        const cur = (el.textContent || '').trim();
-        if (cur === last) return;
-        last = cur; clearTimeout(timer);
-        timer = setTimeout(() => { mo.disconnect(); onStable(el); }, quietMs);
-      });
-      mo.observe(el, { characterData:true, childList:true, subtree:true });
-      setTimeout(() => { try { mo.disconnect(); } catch {} }, timeoutMs);
-      return;
     }
-    const mo = new MutationObserver(() => {
-      const cur = (el.textContent || '').trim();
-      if (cur.length >= minLen) { mo.disconnect(); waitForStableText(el, onStable, minLen, quietMs, timeoutMs); }
+  }catch{}
+
+  const h = heuristicLangCode(clean);
+  if (h && ISO2_TO_LABEL[h]) return { label: iso2Label(h), code: h, flag: flagFor(h) };
+  return { label:'Unknown', code:null, flag:'🌐' };
+}
+
+/* ============================ CSS & render ========================== */
+(function injectLangStyles(){
+  if(document.getElementById('yse-lang-inline-after')) return;
+  const style=document.createElement('style');
+  style.id='yse-lang-inline-after';
+  style.textContent = `
+    yt-formatted-string#channel-title,
+    ytd-account-item-renderer #channel-title,
+    #entity-name.entity-name {
+      display:inline-block !important;
+      position:relative !important;
+      width:auto !important;
+      max-width:none !important;
+      white-space:nowrap !important;
+      vertical-align:baseline !important;
+    }
+    yt-formatted-string#channel-title[data-lang-label]::after,
+    ytd-account-item-renderer #channel-title[data-lang-label]::after,
+    #entity-name.entity-name[data-lang-label]::after {
+      content: " " attr(data-lang-label);
+      font:500 11px/1.2 Roboto,Arial,sans-serif;
+      white-space:nowrap;
+      opacity:.85;
+      margin-left:6px;
+    }
+    .yse-lang-float {
+      position:absolute; left:100%; top:0;
+      margin-left:6px;
+      font:500 11px/1.2 Roboto,Arial,sans-serif;
+      white-space:nowrap; opacity:.85;
+      pointer-events:none;
+      transform: translateY(0.06em);
+    }
+  `;
+  document.head.appendChild(style);
+})();
+
+function setInlineAfterLabel(el, langObj){
+  if(!el || !langObj) return;
+  const text = `${langObj.flag} ${langObj.label}`;
+  el.setAttribute('data-lang-label', text);
+
+  // ::after visible?
+  let afterContent = '';
+  try { afterContent = window.getComputedStyle(el, '::after').getPropertyValue('content'); } catch {}
+  const visible = afterContent && afterContent !== 'none' && afterContent.replace(/["']/g,'').trim().length>0;
+
+  if(!visible){
+    let float = el.parentNode && el.parentNode.querySelector(':scope > .yse-lang-float');
+    if(!float){
+      float = document.createElement('span');
+      float.className = 'yse-lang-float';
+      el.parentNode && el.parentNode.insertBefore(float, el.nextSibling);
+    }
+    float.textContent = text;
+  }else{
+    const sib = el.parentNode && el.parentNode.querySelector(':scope > .yse-lang-float');
+    if(sib) try{ sib.remove(); }catch{}
+  }
+}
+
+/* ============================= Helpers ============================= */
+function waitFor(condFn,onOk,timeoutMs=12000,intervalMs=120){
+  const t0=Date.now(); const iv=setInterval(()=>{
+    try{ if(condFn()){clearInterval(iv);onOk();}
+         else if(Date.now()-t0>timeoutMs){clearInterval(iv);} }
+    catch{ clearInterval(iv); }
+  },intervalMs);
+}
+function waitForStableText(el,onStable,minLen=2,quietMs=200,timeoutMs=8000){
+  let last=(el.textContent||'').trim();
+  if(last.length>=minLen){
+    let timer=setTimeout(()=>onStable(el),quietMs);
+    const mo=new MutationObserver(()=>{
+      const cur=(el.textContent||'').trim();
+      if(cur===last) return;
+      last=cur; clearTimeout(timer);
+      timer=setTimeout(()=>{ try{mo.disconnect();}catch{} onStable(el); },quietMs);
     });
-    mo.observe(el, { characterData:true, childList:true, subtree:true });
-    setTimeout(() => { try { mo.disconnect(); } catch {} }, timeoutMs);
+    mo.observe(el,{characterData:true,childList:true,subtree:true});
+    setTimeout(()=>{ try{mo.disconnect();}catch{} },timeoutMs);
+    return;
   }
-
-  function readyThenDetectAndRender(selector) {
-    const runner = (el) => {
-      waitForStableText(el, () => {
-        const t = (el.textContent || '').trim();
-        const langObj = detectLang(t);
-        setInlineAfterLabel(el, langObj);
-      });
-    };
-    if (typeof waitForElement === 'function') {
-      waitForElement(selector, runner, 12000);
-    } else {
-      waitFor(() => !!document.querySelector(selector), () => runner(document.querySelector(selector)), 12000);
-    }
-  }
-
-  // ====== разові рендери для поточного DOM ==================================
-  function renderAccountListInlineAfter(){
-    document.querySelectorAll('ytd-account-item-renderer #channel-title').forEach((el)=>{
-      const langObj = detectLang((el.textContent||'').trim());
+  const mo=new MutationObserver(()=>{
+    const cur=(el.textContent||'').trim();
+    if(cur.length>=minLen){ mo.disconnect(); waitForStableText(el,onStable,minLen,quietMs,timeoutMs); }
+  });
+  mo.observe(el,{characterData:true,childList:true,subtree:true});
+  setTimeout(()=>{ try{mo.disconnect();}catch{} },timeoutMs);
+}
+function readyThenDetectAndRender(selector){
+  const run=(el)=>{
+    waitForStableText(el, ()=>{
+      const t=(el.textContent||'').trim();
+      const langObj=detectLang(t);
       setInlineAfterLabel(el, langObj);
     });
+  };
+  if(typeof waitForElement==='function'){
+    waitForElement(selector, run, 12000);
+  }else{
+    waitFor(()=>!!document.querySelector(selector), ()=>run(document.querySelector(selector)), 12000);
   }
-  function renderDrawerInlineAfter(){
-    const el = document.querySelector('#entity-name.entity-name');
-    if(!el) return;
+}
+
+/* =========================== Init & observers ====================== */
+function renderAccountList(){
+  document.querySelectorAll('ytd-account-item-renderer #channel-title, yt-formatted-string#channel-title').forEach((el)=>{
     const langObj = detectLang((el.textContent||'').trim());
     setInlineAfterLabel(el, langObj);
-  }
+  });
+}
+function renderDrawer(){
+  const el = document.querySelector('#entity-name.entity-name');
+  if(!el) return;
+  const langObj = detectLang((el.textContent||'').trim());
+  setInlineAfterLabel(el, langObj);
+}
 
-  // ====== ініціалізація ======================================================
-  try {
-    readyThenDetectAndRender('ytd-account-item-renderer #channel-title');
-    readyThenDetectAndRender('#entity-name.entity-name');
-  } catch {}
+try{
+  readyThenDetectAndRender('ytd-account-item-renderer #channel-title');
+  readyThenDetectAndRender('yt-formatted-string#channel-title');
+  readyThenDetectAndRender('#entity-name.entity-name');
+}catch{}
 
-  // ====== debounce мутацій (Studio динамічне) ================================
-  let langMoScheduled = false;
-  const safeKick = () => {
-    if (langMoScheduled) return;
-    langMoScheduled = true;
-    setTimeout(() => {
-      langMoScheduled = false;
-      renderAccountListInlineAfter();
-      renderDrawerInlineAfter();
-    }, 250);
-  };
-
-  const moTargets = [document.body, document.querySelector('ytd-app') || document.documentElement].filter(Boolean);
-  const langMo = new MutationObserver(safeKick);
-  moTargets.forEach(t => langMo.observe(t, { childList:true, subtree:true }));
-
-  setInterval(safeKick, 3500);
+let langMoScheduled=false;
+const safeKick=()=>{
+  if(langMoScheduled) return;
+  langMoScheduled=true;
+  setTimeout(()=>{
+    langMoScheduled=false;
+    renderAccountList();
+    renderDrawer();
+  }, 250);
+};
+const moTargets=[document.body, document.querySelector('ytd-app')||document.documentElement].filter(Boolean);
+const langMo=new MutationObserver(safeKick);
+moTargets.forEach(t=>langMo.observe(t,{childList:true,subtree:true}));
+setInterval(safeKick, 3500);
 
 })();
