@@ -1,14 +1,14 @@
 // ==UserScript==
-// @name         YouTube Studio Stats Extractor (No FAB, Remove Logout)
+// @name         YT Stats + GEO
 // @namespace    http://tampermonkey.net/
-// @version      2.8.9
+// @version      2.9.0
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
-// @connect      script.google.com
+// @connect script.google.com
+// @connect script.googleusercontent.com
 // @run-at       document-idle
-// @require https://cdn.jsdelivr.net/npm/tinyld/dist/tinyld.min.js
 // ==/UserScript==
 
 (function () {
@@ -769,187 +769,117 @@ setOmniSearchBadge(autoStatus);
   removeSignOutMenuItem();
 
   dlog('Script ready');
-/* === LangBadge add-on (tinyld + tuned heuristics + ::after/float, 2025-08) =====
-   Показує праворуч від назви: <FLAG> <Language>.
-   1) ::after без дод. вузлів; 2) якщо ::after не видно — абсолютний float збоку.
-   @require https://cdn.jsdelivr.net/npm/tinyld/dist/tinyld.min.js
+/* === GeoBadge add-on (Google Sheet overrides, 2025-08) =====
+   Показує праворуч від назви каналу GEO з таблиці:
+   - якщо канал є в таблиці → показує значення з колонки B (українською)
+   - якщо немає → показує "пауза"
 =============================================================================== */
 
-const ISO2_TO_LABEL = {
-  ja:'Japanese', pl:'Polish', de:'German', ar:'Arabic', nl:'Dutch',
-  es:'Spanish', ru:'Russian', tr:'Turkish', pt:'Portuguese', it:'Italian',
-  zh:'Chinese', ko:'Korean', ro:'Romanian', el:'Greek', uk:'Ukrainian',
-  id:'Indonesian', hu:'Hungarian', en:'English', hi:'Hindi', fi:'Finnish',
-  he:'Hebrew', no:'Norwegian', ms:'Malay', sv:'Swedish', fr:'French',
-  cs:'Czech', tl:'Filipino', sr:'Serbian', th:'Thai', da:'Danish', vi:'Vietnamese'
-};
-const LANG_FLAG = {
-  ja:'🇯🇵', pl:'🇵🇱', de:'🇩🇪', ar:'🇸🇦', nl:'🇳🇱',
-  es:'🇪🇸', ru:'🇷🇺', tr:'🇹🇷', pt:'🇵🇹', it:'🇮🇹',
-  zh:'🇨🇳', ko:'🇰🇷', ro:'🇷🇴', el:'🇬🇷', uk:'🇺🇦',
-  id:'🇮🇩', hu:'🇭🇺', en:'🇺🇸', hi:'🇮🇳', fi:'🇫🇮',
-  he:'🇮🇱', no:'🇳🇴', ms:'🇲🇾', sv:'🇸🇪', fr:'🇫🇷',
-  cs:'🇨🇿', tl:'🇵🇭', sr:'🇷🇸', th:'🇹🇭', da:'🇩🇰', vi:'🇻🇳'
-};
-const iso2Label = c => ISO2_TO_LABEL[c] || (c ? c.toUpperCase() : 'Unknown');
-const flagFor   = c => LANG_FLAG[c]     || '🌐';
+const GEO_OVERRIDES_URL = "https://script.google.com/macros/s/AKfycbzqSQtJJp3gL5y2R3c3ABWx-aWcG8U9jcF_k-WOjdAfFclJ3OREtJcU4rEEs2snYV1K/exec";
+let geoMap = Object.create(null);
+let overridesReady = false;
 
-// safe normalize
-function safeNormalize(str, form='NFC'){ try{return String(str).normalize(form);}catch{return String(str);} }
-function normalizeText(raw){
-  return safeNormalize(raw,'NFC')
-    .replace(/[\u2019\u2018\u2032\u00B4\u0060]/g,"'") // ’ ‘ ′ ´ `
-    .toLowerCase();
+function normalizeName(s) {
+  return String(s || "")
+    .normalize("NFC")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
 }
 
-// tinyld UMD
-function getDetector(){
-  const t = window.tinyld;
-  if(!t) return null;
-  if(typeof t === 'function') return { detect:(txt)=>t(txt) };
-  if(typeof t.detect === 'function') return t;
-  return null;
-}
-
-/* ================= Heuristics (return ISO2 or null) ================== */
-// scripts
-const RE_AR   = /[\u0600-\u06FF]/;
-const RE_HE   = /[\u0590-\u05FF]/;
-const RE_EL   = /[\u0370-\u03FF]/;
-const RE_CYR  = /[\u0400-\u04FF]/;
-const RE_UA   = /[ІіЇїЄєҐґ]/;
-const RE_DEV  = /[\u0900-\u097F]/;
-const RE_THAI = /[\u0E00-\u0E7F]/;
-const RE_HANG = /[\uAC00-\uD7AF]/;
-const RE_HIRA = /[\u3040-\u309F]/;
-const RE_KATA = /[\u30A0-\u30FF]/;
-const RE_HAN  = /[\u3400-\u9FFF\uF900-\uFAFF]/;
-
-// latin diacritics
-const RE_DE   = /[äöüß]/i;
-const RE_IT   = /[àèéìíîòóù]/i;
-const RE_FR   = /[àâçéèêëîïôûùüÿ]/i;
-const RE_RO   = /[ăâîșşţț]/i;
-const RE_PL   = /[ąćęłńóśźż]/i;
-const RE_CZ   = /[ěščřžýáíéůú]/i;
-const RE_HU   = /[áéíóöőúüű]/i;
-const RE_SV   = /[åäö]/i;
-const RE_NO_DA= /[æøå]/i;
-const RE_PT   = /[ãõáâàéêíóôúç]/i;
-const RE_ES   = /[áéíóúñü]/i;
-const RE_VI   = /[ăâêôơưđĂÂÊÔƠƯĐ]/;
-
-// ⚠️ Turkish: strict set — БЕЗ ö/ü (щоб не чіпати німецьку)
-const RE_TR_STRICT = /[ğşıİç]/i;
-
-// keywords
-const KW_DE = /\b(die|der|das|des|und|zum|vom|über|mit|für|ohne|leben|stille|wahrheiten|momente|erinnerungen|schicksal|bruchst[üu]cke)\b/i;
-const KW_IT = /\b(di|gli|le|la|lo|il|un|una|uno|nelle|delle|degli|sotto|tra|fra|con|per|che|oltre)\b|emozion/i;
-const SUF_IT= /(zione|zioni|mente)\b/i;
-
-const KW_ES = /\b(de|del|la|el|que|sin|entre|lo)\b|verdad|momentos|cuentan|cuenta/i;
-const KW_PT = /\b(de|do|da|dos|das|que)\b|verdade|coração|histórias|instantes|vozes|vida\b/i;
-
-const KW_TR = /\b(hayat(?:ın)?|yaşam(?:ın)?|gerçek|hikaye(?:si|ler[ie]?)|gece|itiraf(?:ları)?|söylenmeyen|geç|kalm[ıi]ş|kırık|parçalar[ıi]|gönülden|sözler|hikayeler)\b/i;
-
-const KW_NL = /\b(de|het|van|en)\b|verhalen|waarheid|levens|kleine|grote|ongezegde/i;
-const KW_EN = /\b(the|and|with|for|of|that)\b|stories|moments|truth/i;
-const KW_RO = /inim[ăa]|via[ţț]a|f[aă]r[aă]|emo[țt]ii|n[eé]spuse|voc[iile]|glasul|voci(?:le)?/i;
-const KW_ID = /\b(kisah|cerita|kehidupan|benar|rahasia|yang|tak|terucap|suara|hati|jiwa|hidup)\b/i;
-const KW_MS = /\b(cerita|hidup|suara|kehidupan|benar)\b/i;
-const KW_TL = /\b(totoong|kwento|buhay|mga|tadhana|alaala|piraso)\b/i;
-const KW_SV = /\b(från|hjärtat|sanna)\b/i;
-const KW_NO = /\b(kjærlighet|livet|øyeblikk|ord|fra)\b/i;
-const KW_DA = /\b(uden|livet|ord|fra)\b/i;
-const KW_SR_LAT = /[čćđšž]|\bpri[čc]e\b|\biz\b/i;
-
-function heuristicLangCode(textRaw){
-  const t = (' ' + normalizeText(textRaw) + ' ').replace(/\s+/g,' ');
-
-  // scripts
-  if (RE_AR.test(t))   return 'ar';
-  if (RE_HE.test(t))   return 'he';
-  if (RE_EL.test(t))   return 'el';
-  if (RE_DEV.test(t))  return 'hi';
-  if (RE_THAI.test(t)) return 'th';
-  if (RE_HANG.test(t)) return 'ko';
-  if (RE_HIRA.test(t) || RE_KATA.test(t)) return 'ja';
-  if (RE_HAN.test(t))  return 'zh';
-  if (RE_CYR.test(t))  return RE_UA.test(t) ? 'uk' : 'ru';
-  if (RE_VI.test(t))   return 'vi';
-
-  // German (спочатку DE, щоб не перехопив TR)
-  if (RE_DE.test(t) || KW_DE.test(t)) return 'de';
-
-  // Italian
-  if (RE_IT.test(t) || KW_IT.test(t) || SUF_IT.test(t)) return 'it';
-
-  // Portuguese / Spanish
-  if (RE_PT.test(t) || KW_PT.test(t)) return 'pt';
-  if (RE_ES.test(t) || KW_ES.test(t)) return 'es';
-
-  // Turkish — тільки strict букви або явні ключі
-  if (RE_TR_STRICT.test(t) || KW_TR.test(t)) return 'tr';
-
-  // інші латиниці
-  if (RE_FR.test(t)) return 'fr';
-  if (RE_RO.test(t) || KW_RO.test(t)) return 'ro';
-  if (RE_PL.test(t)) return 'pl';
-  if (RE_CZ.test(t)) return 'cs';
-  if (RE_HU.test(t)) return 'hu';
-
-  if (RE_SV.test(t) || KW_SV.test(t)) return 'sv';
-  if (RE_NO_DA.test(t)) {
-    if (KW_NO.test(t)) return 'no';
-    if (KW_DA.test(t)) return 'da';
-    if (/kj[æa]rl/.test(t)) return 'no';
-    if (/uden/.test(t)) return 'da';
-    return 'no';
-  }
-
-  if (KW_NL.test(t))  return 'nl';
-  if (KW_TL.test(t))  return 'tl';
-  if (KW_ID.test(t))  return 'id';
-  if (KW_MS.test(t))  return 'ms';
-  if (KW_SR_LAT.test(t)) return 'sr';
-  if (KW_EN.test(t))  return 'en';
-
-  return null;
-}
-
-/* ========================== Final detect =========================== */
-function detectLang(text){
-  const clean = safeNormalize(text,'NFC').replace(/\s+/g,' ').trim();
-  if(!clean) return { label:'Unknown', code:null, flag:'🌐' };
-  if (clean.length <= 3) {
-    if (RE_CYR.test(clean)) return { label:'Ukrainian', code:'uk', flag:flagFor('uk') };
-    return { label:'Unknown', code:null, flag:'🌐' };
-  }
-
-  try{
-    const det = getDetector();
-    if(det){
-      const out = det.detect(clean);
-      let code = null;
-      if (typeof out === 'string') code = out.toLowerCase();
-      else if (Array.isArray(out) && out[0]) code = (out[0].lang||out[0].code||out[0].language||'').toLowerCase();
-      else if (out && typeof out === 'object') code = (out.lang||out.code||out.language||'').toLowerCase();
-      if (code && ISO2_TO_LABEL[code]) {
-        return { label: iso2Label(code), code, flag: flagFor(code) };
+function loadGeoOverrides(cb) {
+  GM_xmlhttpRequest({
+    method: "GET",
+    url: GEO_OVERRIDES_URL,
+    onload: (res) => {
+      try {
+        const json = JSON.parse(res.responseText || "{}");
+        if (json && json.ok && Array.isArray(json.data)) {
+          geoMap = Object.create(null);
+          for (const row of json.data) {
+            const name = normalizeName(row.channelName);
+            if (name && row.geoLabel) {
+              geoMap[name] = String(row.geoLabel).trim();
+            }
+          }
+          overridesReady = true;
+          console.log("[YSE] GEO overrides loaded:", Object.keys(geoMap).length);
+        }
+      } catch (e) {
+        console.error("[YSE] overrides parse error:", e);
+      } finally {
+        cb && cb();
       }
-    }
-  }catch{}
+    },
+    onerror: () => { cb && cb(); }
+  });
+}
+// Мапа GEO → прапор
+const GEO_FLAGS = {
+  "Японія": "🇯🇵",
+  "Польща": "🇵🇱",
+  "Німеччина": "🇩🇪",
+  "Арабія": "🇸🇦",
+  "Нідерланди": "🇳🇱",
+  "Іспанія": "🇪🇸",
+  "Ру": "🇷🇺",           // якщо треба уточнити, можна замінити на 🇷🇺 або інший прапор
+  "Туреччина": "🇹🇷",
+  "Португалія": "🇵🇹",
+  "Італія": "🇮🇹",
+  "Китай": "🇨🇳",
+  "Корея": "🇰🇷",
+  "Румунія": "🇷🇴",
+  "Греція": "🇬🇷",
+  "Україна": "🇺🇦",
+  "Індонезія": "🇮🇩",
+  "Угорщина": "🇭🇺",
+  "США": "🇺🇸",
+  "Індія": "🇮🇳",
+  "Фінляндія": "🇫🇮",
+  "Ізраїль": "🇮🇱",
+  "Норвегія": "🇳🇴",
+  "Малайзія": "🇲🇾",
+  "Швеція": "🇸🇪",
+  "Франція": "🇫🇷",
+  "Чехія": "🇨🇿",
+  "Філіпіни": "🇵🇭",
+  "Сербія": "🇷🇸",
+  "Тайланд": "🇹🇭",
+  "Данія": "🇩🇰"
+};
 
-  const h = heuristicLangCode(clean);
-  if (h && ISO2_TO_LABEL[h]) return { label: iso2Label(h), code: h, flag: flagFor(h) };
-  return { label:'Unknown', code:null, flag:'🌐' };
+function flagForGeo(label) {
+  return GEO_FLAGS[label] || "🌐";
 }
 
-/* ============================ CSS & render ========================== */
-(function injectLangStyles(){
-  if(document.getElementById('yse-lang-inline-after')) return;
+
+function setInlineAfterLabel(el, geoText) {
+  if (!el) return;
+  const text = `${flagForGeo(geoText)} ${geoText}`;
+  el.setAttribute('data-geo-label', text);
+
+  let afterContent = '';
+  try { afterContent = window.getComputedStyle(el, '::after').getPropertyValue('content'); } catch {}
+  const visible = afterContent && afterContent !== 'none' && afterContent.replace(/["']/g,'').trim().length>0;
+
+  if (!visible) {
+    let float = el.parentNode && el.parentNode.querySelector(':scope > .yse-geo-float');
+    if (!float) {
+      float = document.createElement('span');
+      float.className = 'yse-geo-float';
+      el.parentNode && el.parentNode.insertBefore(float, el.nextSibling);
+    }
+    float.textContent = text;
+  } else {
+    const sib = el.parentNode && el.parentNode.querySelector(':scope > .yse-geo-float');
+    if (sib) try { sib.remove(); } catch {}
+  }
+}
+
+(function injectGeoStyles(){
+  if(document.getElementById('yse-geo-inline-after')) return;
   const style=document.createElement('style');
-  style.id='yse-lang-inline-after';
+  style.id='yse-geo-inline-after';
   style.textContent = `
     yt-formatted-string#channel-title,
     ytd-account-item-renderer #channel-title,
@@ -961,16 +891,16 @@ function detectLang(text){
       white-space:nowrap !important;
       vertical-align:baseline !important;
     }
-    yt-formatted-string#channel-title[data-lang-label]::after,
-    ytd-account-item-renderer #channel-title[data-lang-label]::after,
-    #entity-name.entity-name[data-lang-label]::after {
-      content: " " attr(data-lang-label);
+    yt-formatted-string#channel-title[data-geo-label]::after,
+    ytd-account-item-renderer #channel-title[data-geo-label]::after,
+    #entity-name.entity-name[data-geo-label]::after {
+      content: " " attr(data-geo-label);
       font:500 11px/1.2 Roboto,Arial,sans-serif;
       white-space:nowrap;
       opacity:.85;
       margin-left:6px;
     }
-    .yse-lang-float {
+    .yse-geo-float {
       position:absolute; left:100%; top:0;
       margin-left:6px;
       font:500 11px/1.2 Roboto,Arial,sans-serif;
@@ -982,107 +912,42 @@ function detectLang(text){
   document.head.appendChild(style);
 })();
 
-function setInlineAfterLabel(el, langObj){
-  if(!el || !langObj) return;
-  const text = `${langObj.flag} ${langObj.label}`;
-  el.setAttribute('data-lang-label', text);
-
-  // ::after visible?
-  let afterContent = '';
-  try { afterContent = window.getComputedStyle(el, '::after').getPropertyValue('content'); } catch {}
-  const visible = afterContent && afterContent !== 'none' && afterContent.replace(/["']/g,'').trim().length>0;
-
-  if(!visible){
-    let float = el.parentNode && el.parentNode.querySelector(':scope > .yse-lang-float');
-    if(!float){
-      float = document.createElement('span');
-      float.className = 'yse-lang-float';
-      el.parentNode && el.parentNode.insertBefore(float, el.nextSibling);
-    }
-    float.textContent = text;
-  }else{
-    const sib = el.parentNode && el.parentNode.querySelector(':scope > .yse-lang-float');
-    if(sib) try{ sib.remove(); }catch{}
+function renderOne(el) {
+  if (!el) return;
+  if (!overridesReady) return;   // ⬅️ якщо ще не підвантажили — нічого не малюємо
+  const name = (el.textContent || '').trim();
+  const norm = normalizeName(name);
+  let geo = 'пауза';
+  if (geoMap[norm]) {
+    geo = geoMap[norm];
   }
+  setInlineAfterLabel(el, geo);
 }
 
-/* ============================= Helpers ============================= */
-function waitFor(condFn,onOk,timeoutMs=12000,intervalMs=120){
-  const t0=Date.now(); const iv=setInterval(()=>{
-    try{ if(condFn()){clearInterval(iv);onOk();}
-         else if(Date.now()-t0>timeoutMs){clearInterval(iv);} }
-    catch{ clearInterval(iv); }
-  },intervalMs);
-}
-function waitForStableText(el,onStable,minLen=2,quietMs=200,timeoutMs=8000){
-  let last=(el.textContent||'').trim();
-  if(last.length>=minLen){
-    let timer=setTimeout(()=>onStable(el),quietMs);
-    const mo=new MutationObserver(()=>{
-      const cur=(el.textContent||'').trim();
-      if(cur===last) return;
-      last=cur; clearTimeout(timer);
-      timer=setTimeout(()=>{ try{mo.disconnect();}catch{} onStable(el); },quietMs);
-    });
-    mo.observe(el,{characterData:true,childList:true,subtree:true});
-    setTimeout(()=>{ try{mo.disconnect();}catch{} },timeoutMs);
-    return;
-  }
-  const mo=new MutationObserver(()=>{
-    const cur=(el.textContent||'').trim();
-    if(cur.length>=minLen){ mo.disconnect(); waitForStableText(el,onStable,minLen,quietMs,timeoutMs); }
-  });
-  mo.observe(el,{characterData:true,childList:true,subtree:true});
-  setTimeout(()=>{ try{mo.disconnect();}catch{} },timeoutMs);
-}
-function readyThenDetectAndRender(selector){
-  const run=(el)=>{
-    waitForStableText(el, ()=>{
-      const t=(el.textContent||'').trim();
-      const langObj=detectLang(t);
-      setInlineAfterLabel(el, langObj);
-    });
-  };
-  if(typeof waitForElement==='function'){
-    waitForElement(selector, run, 12000);
-  }else{
-    waitFor(()=>!!document.querySelector(selector), ()=>run(document.querySelector(selector)), 12000);
-  }
+function renderAccountList() {
+  document.querySelectorAll('ytd-account-item-renderer #channel-title, yt-formatted-string#channel-title')
+    .forEach(renderOne);
 }
 
-/* =========================== Init & observers ====================== */
-function renderAccountList(){
-  document.querySelectorAll('ytd-account-item-renderer #channel-title, yt-formatted-string#channel-title').forEach((el)=>{
-    const langObj = detectLang((el.textContent||'').trim());
-    setInlineAfterLabel(el, langObj);
-  });
-}
-function renderDrawer(){
+function renderDrawer() {
   const el = document.querySelector('#entity-name.entity-name');
-  if(!el) return;
-  const langObj = detectLang((el.textContent||'').trim());
-  setInlineAfterLabel(el, langObj);
+  if (el) renderOne(el);
 }
 
-try{
-  readyThenDetectAndRender('ytd-account-item-renderer #channel-title');
-  readyThenDetectAndRender('yt-formatted-string#channel-title');
-  readyThenDetectAndRender('#entity-name.entity-name');
-}catch{}
+function initRenderers() {
+  renderAccountList();
+  renderDrawer();
+}
 
-let langMoScheduled=false;
-const safeKick=()=>{
-  if(langMoScheduled) return;
-  langMoScheduled=true;
-  setTimeout(()=>{
-    langMoScheduled=false;
-    renderAccountList();
-    renderDrawer();
-  }, 250);
-};
+loadGeoOverrides(() => {
+  initRenderers();
+});
+
 const moTargets=[document.body, document.querySelector('ytd-app')||document.documentElement].filter(Boolean);
-const langMo=new MutationObserver(safeKick);
-moTargets.forEach(t=>langMo.observe(t,{childList:true,subtree:true}));
-setInterval(safeKick, 3500);
+const geoMo=new MutationObserver(()=>initRenderers());
+moTargets.forEach(t=>geoMo.observe(t,{childList:true,subtree:true}));
+setInterval(initRenderers, 3500);
+
+console.log("[YSE] GeoBadge ready");
 
 })();
