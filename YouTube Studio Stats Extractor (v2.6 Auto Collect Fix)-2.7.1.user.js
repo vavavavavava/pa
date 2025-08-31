@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YT Stats + GEO + cache
+// @name         YT Stats + GEO + Caches
 // @namespace    http://tampermonkey.net/
-// @version      2.9.1
+// @version      2.9.3
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
@@ -35,14 +35,14 @@
   let fourthMetric = '';      // текст #metric-total у 4-му контейнері (якщо є)
   let overviewChannelId = ''; // UC… з URL
 
-  // секундомір очікування Content (🆕)
+  // секундомір очікування Content
   let contentWaitTimer = null;
 
   // ---------- утиліти ----------
   function getExtractButton() { return document.querySelector('#extract-button'); }
   function setButtonStatus(text) { const btn = getExtractButton(); if (btn) btn.textContent = text; }
 
-  // 🆕 Дата за часовим поясом Лос-Анджелеса у форматі YYYY-MM-DD
+  // Дата за часовим поясом Лос-Анджелеса у форматі YYYY-MM-DD
   function getDateInLA() {
     const laDate = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
     const d = new Date(laDate);
@@ -64,56 +64,52 @@
     for (const q of HEADER_SELECTORS) { const el = document.querySelector(q); if (el) return el; }
     return null;
   }
-// === АВТО-СТАТУС ДЛЯ OMNISEARCH (нове) ===
-function computeAutoStatus({ monetizationFlag, views48h, hoursLifetime, subscribers, totalVideos }) {
-  const v48 = Number(views48h) || 0;
-  const hrs = Number(hoursLifetime) || 0;
-  const subs = Number(subscribers) || 0;
-  const vids = Number(totalVideos) || 0;
 
-  // Монетні
-  if (monetizationFlag) {
-    if (v48 >= 15000) return 'Монета топ';
-    if (v48 >= 10000) return 'Монета гуд';
-    if (v48 >= 5000)  return 'Монета норм';
-    if (v48 >= 2000)  return 'Монета ге';
-    return 'Монета тінь';
+  // === АВТО-СТАТУС ДЛЯ OMNISEARCH (залишаємо твою функцію правил) ===
+  function computeAutoStatus({ monetizationFlag, views48h, hoursLifetime, subscribers, totalVideos }) {
+    const v48 = Number(views48h) || 0;
+    const hrs = Number(hoursLifetime) || 0;
+    const subs = Number(subscribers) || 0;
+    const vids = Number(totalVideos) || 0;
+
+    // Монетні
+    if (monetizationFlag) {
+      if (v48 >= 15000) return 'Монета топ';
+      if (v48 >= 10000) return 'Монета гуд';
+      if (v48 >= 5000)  return 'Монета норм';
+      if (v48 >= 2000)  return 'Монета ге';
+      return 'Монета тінь';
+    }
+
+    // НЕ монетні
+    if (hrs > 4000 && subs >= 500) return 'Чекаємо';
+    if (hrs > 4000 && subs < 500)  return 'Підписки';
+    if (v48 >= 10000)              return 'Топ';
+    if (v48 >= 5000)               return 'Гуд';
+    if (v48 > 2000 && v48 < 5000)  return 'Норм';
+    if (hrs > 1000 && v48 <= 2000) return 'Тінь';
+
+    // Розгалуження за кількістю відео при низьких v48
+    if (vids >= 14 && v48 <= 2000 && vids < 20) return 'Пауза';
+    if (vids > 20 && v48 <= 2000)               return 'Заміна';
+    if (vids < 14 && v48 < 2000 && v48 > 100)   return 'Тестові';
+    if (vids < 14 && v48 < 100)                 return 'Нулячі';
+
+    // Фолбек
+    return monetizationFlag ? 'Монета тінь' : 'Тінь';
   }
 
-  // НЕ монетні
-  if (hrs > 4000 && subs >= 500) return 'Чекаємо';
-  if (hrs > 4000 && subs < 500)  return 'Підписки';
-  if (v48 >= 10000)              return 'Топ';
-  if (v48 >= 5000)               return 'Гуд';
-  if (v48 > 2000 && v48 < 5000)  return 'Норм';
-  if (hrs > 1000 && v48 <= 2000) return 'Тінь';
-
-  // Розгалуження за кількістю відео при низьких v48
-  if (vids >= 14 && v48 <= 2000 && vids < 20) return 'Пауза';
-  if (vids > 20 && v48 <= 2000)               return 'Заміна';
-  if (vids < 14 && v48 < 2000 && v48 > 100)   return 'Тестові';
-  if (vids < 14 && v48 < 100)                 return 'Нулячі';
-
-  // Фолбек, якщо нічого не підійшло
-  return monetizationFlag ? 'Монета тінь' : 'Тінь';
-}
-
-function setOmniSearchStatus(statusText) {
-  // Підміняємо Omnisearch input на статус
-  try {
-    waitForElement('input#query-input', (inp) => {
+  // Старий API (якщо десь лишився) — залишимо як no-op-sync із плейсхолдером
+  function setOmniSearchStatus(statusText) {
+    try {
+      const inp = document.querySelector('input#query-input');
       if (!inp) return;
-      inp.value = statusText;
       inp.setAttribute('placeholder', statusText);
-      // тригеримо подію, щоб YouTube не перезаписав значення
-      inp.dispatchEvent(new Event('input', { bubbles: true }));
-      inp.dispatchEvent(new Event('change', { bubbles: true }));
-      dlog('OmniSearch статус:', statusText);
-    }, 8000);
-  } catch (e) {
-    derr('setOmniSearchStatus error:', e);
+      dlog('OmniSearch статус (placeholder):', statusText);
+    } catch (e) {
+      derr('setOmniSearchStatus error:', e);
+    }
   }
-}
 
   function ensureHeaderButton() {
     if (document.querySelector('#extract-button')) return;
@@ -121,7 +117,7 @@ function setOmniSearchStatus(statusText) {
     if (!container) return;
     const btn = document.createElement('button');
     btn.id = 'extract-button';
-    btn.textContent = '📊 Дані'; // неактивна
+    btn.textContent = '📊 Дані';
     btn.style.cssText = `
       margin-left: 10px;
       background-color: #3ea6ff;
@@ -152,203 +148,201 @@ function setOmniSearchStatus(statusText) {
     return m ? Number(m[0]) : 0;
   }
 
-  // Універсальний парсер з підтримкою "тыс./тис./k" і "млн/m" + очистка валютних символів
+  // Універсальний парсер з підтримкою тыс/млн/k/m + очистка валютних символів
   function parseNumberWithUnits(raw) {
     let text = String(raw || '')
-      .replace(/\u00A0/g, ' ')   // NBSP → пробіл
+      .replace(/\u00A0/g, ' ')
       .trim()
       .toLowerCase();
 
-    // прибираємо валютні символи
     text = text.replace(/[$₴€₽]/g, '').trim();
 
-    // заміна коми на крапку для десяткових
     const numMatch = text.replace(',', '.').match(/-?\d+(\.\d+)?/);
     let base = numMatch ? parseFloat(numMatch[0]) : NaN;
     if (isNaN(base)) return 0;
 
-    // множники
     if (/(тыс|тис|k)\.?/.test(text)) base *= 1000;
     if (/(млн|m)\.?/.test(text))     base *= 1_000_000;
 
     return base;
   }
-// === YSE: стилі бейджа в Omnisearch (нове) ===
-// === YSE: стилі бейджа, що імітує поле пошуку ===
-(function injectYseBadgeStyles() {
-  if (document.getElementById('yse-badge-styles')) return;
-  const css = `
-    .yse-badge-search {
-      display: flex;
-      align-items: center;
-      width: 100%;
-      box-sizing: border-box;
-      padding: 0 12px;
-      height: 40px;                 /* fallback — далі спробуємо підмінити з обчислених стилів */
-      border-radius: 24px;          /* fallback */
-      background: rgba(255,255,255,0.06); /* fallback для dark */
-      border: 1px solid rgba(255,255,255,0.12); /* fallback */
-      gap: 10px;
-      cursor: default;
-      user-select: none;
-      font-weight: 500;
-      font-size: 14px;
-      line-height: 1;
-    
-      justify-content: center;
-      gap: 0;
-    }
-    .yse-search-icon {
-      width: 20px; height: 20px; flex: 0 0 20px;
-      opacity: .72;
-    }
-    .yse-chip {
-      display: inline-flex; align-items: center; justify-content: center;
-      padding: 4px 8px; border-radius: 999px; font-weight: 600;
-      border: 1px solid transparent; line-height: 1;
-    
-      width: 100%;
-      text-align: center;
-      justify-content: center;
-      padding: 6px 0;
-    }
-    /* кольори чипа */
-    .yse-chip-green  { color: #22c55e; background: rgba(34,197,94,0.12);  border-color: rgba(34,197,94,0.25); }
-    .yse-chip-orange { color: #f59e0b; background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.25); }
-    .yse-chip-blue   { color: #3b82f6; background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.25); }
-    .yse-chip-red    { color: #ef4444; background: rgba(239,68,68,0.12);  border-color: rgba(239,68,68,0.25); }
-    .yse-chip-gray   { color: #9ca3af; background: rgba(156,163,175,0.12);border-color: rgba(156,163,175,0.25); }
 
-    .yse-status-text { opacity: .92; }
-    .yse-badge-search.yse-no-bg { background: transparent !important; border: none !important; }
-  `;
-  const style = document.createElement('style');
-  style.id = 'yse-badge-styles';
-  style.textContent = css;
-  document.head.appendChild(style);
-})();
+  /* === OmniSearch Status (drop-in, stable singleton, no overlay) ============== */
+  let yseDesiredStatusText = '';   // що показувати
+  let yseStatusBoxRef = null;      // <div id="yse-status-box">
+  let yseSearchLayerRef = null;    // div#search-layer…
+  let yseLayerObserver = null;     // єдиний observer
 
+  (function injectYseBadgeStyles() {
+    if (document.getElementById('yse-badge-styles')) return;
+    const css = `
+      .yse-badge-search {
+        display:flex; align-items:center; width:100%; box-sizing:border-box;
+        padding:0 12px; height:40px; border-radius:24px;
+        background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12);
+        font-weight:500; font-size:14px; line-height:1; justify-content:center;
+      }
+      .yse-chip{display:inline-flex;align-items:center;justify-content:center;
+        padding:6px 0;border-radius:999px;font-weight:600;border:1px solid transparent;width:100%;}
+      .yse-chip-green{color:#22c55e;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.25)}
+      .yse-chip-orange{color:#f59e0b;background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.25)}
+      .yse-chip-blue{color:#3b82f6;background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.25)}
+      .yse-chip-red{color:#ef4444;background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.25)}
+      .yse-chip-gray{color:#9ca3af;background:rgba(156,163,175,.12);border-color:rgba(156,163,175,.25)}
+      .yse-badge-search.yse-no-bg{background:transparent!important;border:none!important}
+    `;
+    const style = document.createElement('style');
+    style.id = 'yse-badge-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  })();
 
-// Маппер кольорів за назвою статусу
-function yseGetStatusColorClass(statusText = '') {
-  const s = String(statusText).toLowerCase();
-  if (s.includes('топ')) return 'yse-green';
-  if (s.includes('гуд')) return 'yse-orange';
-  if (s.includes('норм')) return 'yse-blue';
-  if (s.includes('заміна') || s.includes('тінь')) return 'yse-red';
-  if (s.includes('нуляч')) return 'yse-gray';
-  // дефолт — синій
-  return 'yse-blue';
-}
-// === Helpers added to fix ReferenceError & style copy ===
-// Map color class name to chip class name, e.g. "yse-green" -> "yse-chip-green"
-const yseGetStatusChipClass = (statusText = '') => {
-  try {
-    const base = yseGetStatusColorClass(statusText); // returns yse-green / yse-orange / ...
-    return base.replace(/^yse-/, 'yse-chip-');       // -> yse-chip-green / ...
-  } catch (e) {
-    return 'yse-chip-blue';
+  function yseCloseOmniOverlays() {
+    try {
+      document.querySelectorAll('tp-yt-iron-overlay-backdrop.opened')
+        .forEach(el => { try { el.remove(); } catch(_){} });
+      document.querySelectorAll('ytcp-text-menu[opened], ytcp-dialog[opened], .style-scope.ytcp-omnisearch[opened]')
+        .forEach(el => { try { el.removeAttribute('opened'); el.style.display='none'; } catch(_){} });
+      const inp = document.querySelector('input#query-input');
+      if (inp && document.activeElement === inp) { try { inp.blur(); } catch(_){} }
+      document.querySelectorAll('[aria-expanded="true"]')
+        .forEach(el => { try { el.setAttribute('aria-expanded','false'); } catch(_){} });
+    } catch(_) {}
   }
-};
-
-// Copy size/rounded/padding from the search layer so our badge matches the search field look
-function yseApplyBoxLookFromLayer(layer, box) {
-  try {
-    if (!layer || !box) return;
-    const cs = getComputedStyle(layer);
-    if (cs) {
-      if (cs.height) box.style.height = cs.height;
-      if (cs.borderRadius) box.style.borderRadius = cs.borderRadius;
-      if (cs.padding) box.style.padding = cs.padding;
-      if (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)') {
-        box.style.background = cs.backgroundColor;
+  function yseFindSearchLayer() {
+    return document.querySelector('div#search-layer.style-scope.ytcp-omnisearch') || null;
+  }
+  function yseApplyBoxLookFromLayer(layer, box) {
+    try {
+      if (!layer || !box) return;
+      const cs = getComputedStyle(layer);
+      if (cs) {
+        if (cs.height) box.style.height = cs.height;
+        if (cs.borderRadius) box.style.borderRadius = cs.borderRadius;
+        if (cs.padding) box.style.padding = cs.padding;
+        if (cs.backgroundColor && cs.backgroundColor !== 'rgba(0,0,0,0)') box.style.background = cs.backgroundColor;
+        if (cs.border && cs.border !== '0px none rgb(0,0,0)') box.style.border = cs.border;
       }
-      if (cs.border && cs.border !== '0px none rgb(0, 0, 0)') {
-        box.style.border = cs.border;
+      const inp = layer.querySelector('input, #query-input');
+      if (inp) {
+        const ci = getComputedStyle(inp);
+        if (ci.height) box.style.height = ci.height;
+        if (ci.borderRadius) box.style.borderRadius = ci.borderRadius;
+        if (ci.padding) box.style.padding = ci.padding;
+        if (ci.fontSize) box.style.fontSize = ci.fontSize;
+        if (ci.lineHeight) box.style.lineHeight = ci.lineHeight;
       }
+    } catch(_) {}
+  }
+  function yseGetStatusColorClass(statusText='') {
+    const s = String(statusText).toLowerCase();
+    if (s.includes('топ')) return 'yse-green';
+    if (s.includes('гуд')) return 'yse-orange';
+    if (s.includes('норм')) return 'yse-blue';
+    if (s.includes('заміна') || s.includes('тінь')) return 'yse-red';
+    if (s.includes('нуляч')) return 'yse-gray';
+    return 'yse-blue';
+  }
+  function yseGetStatusChipClass(statusText='') {
+    try { return yseGetStatusColorClass(statusText).replace(/^yse-/,'yse-chip-'); }
+    catch { return 'yse-chip-blue'; }
+  }
+  function yseRenderChipText(txt) {
+    if (!yseStatusBoxRef) return;
+    const cls = yseGetStatusChipClass(txt);
+    let chip = yseStatusBoxRef.querySelector('.yse-chip');
+    if (!chip) {
+      chip = document.createElement('span');
+      chip.className = `yse-chip ${cls}`;
+      yseStatusBoxRef.appendChild(chip);
     }
-    // Also try to mirror the inner input styles if present
-    const inp = layer.querySelector('input, #query-input');
-    if (inp) {
-      const ci = getComputedStyle(inp);
-      if (ci.height) box.style.height = ci.height;
-      if (ci.borderRadius) box.style.borderRadius = ci.borderRadius;
-      if (ci.padding) box.style.padding = ci.padding;
-      if (ci.fontSize) box.style.fontSize = ci.fontSize;
-      if (ci.lineHeight) box.style.lineHeight = ci.lineHeight;
+    chip.className = `yse-chip ${cls}`;
+    chip.textContent = txt;
+  }
+  function yseEnsureBadgeMounted() {
+    if (!yseSearchLayerRef || !document.contains(yseSearchLayerRef)) {
+      yseSearchLayerRef = yseFindSearchLayer();
+      if (!yseSearchLayerRef) return;
     }
-  } catch (_) { /* no-op */ }
-}
-
-
-// Створення/оновлення кастомного бейджа замість інпута пошуку
-// Замінює контент у #search-layer на наш бейдж-статус (без видалення вузла)
-function setOmniSearchBadge(statusText) {
-  try {
-    waitForElement('div#search-layer.style-scope.ytcp-omnisearch', (layer) => {
-      if (!layer) return;
-
-      // 1) сховати всі штатні елементи пошуку
-      Array.from(layer.childNodes || []).forEach((n) => { if (n && n.style) n.style.display = 'none'; });
-
-      // 2) створити/оновити наш бокс
-      let box = layer.querySelector('#yse-status-box');
-      const chipClass = yseGetStatusChipClass(statusText);
-
-      if (!box) {
-        box = document.createElement('div');
+    Array.from(yseSearchLayerRef.childNodes || []).forEach((n) => {
+      if (n && n !== yseStatusBoxRef && n.style) n.style.display = 'none';
+    });
+    if (!yseStatusBoxRef || !yseSearchLayerRef.contains(yseStatusBoxRef)) {
+      yseStatusBoxRef = yseSearchLayerRef.querySelector('#yse-status-box');
+      if (!yseStatusBoxRef) {
+        const box = document.createElement('div');
         box.id = 'yse-status-box';
         box.className = 'yse-badge-search';
-
-        const chip = document.createElement('span');
-        chip.className = `yse-chip ${chipClass}`;
-        chip.textContent = statusText;
-
-        box.appendChild(chip);
-
-        // застосуємо стилі шару, щоб виглядати як поле пошуку
-        yseApplyBoxLookFromLayer(layer, box);
-
-        layer.appendChild(box);
-
-        // спостерігач, щоб відновлювати блок при перерисовці
-        const mo = new MutationObserver(() => {
-          if (!layer.contains(box)) {
-            const re = document.createElement('div');
-            re.id = 'yse-status-box';
-            re.className = 'yse-badge-search';
-            const c2 = document.createElement('span');
-            c2.className = `yse-chip ${chipClass}`;
-            c2.textContent = statusText;
-            re.appendChild(c2);
-            yseApplyBoxLookFromLayer(layer, re);
-            layer.appendChild(re);
-            box = re;
-          }
-          // знов сховаємо стандартні елементи
-          Array.from(layer.childNodes || []).forEach((n) => {
-            if (n && n !== box && n.style) n.style.display = 'none';
-          });
-        });
-        mo.observe(layer, { childList: true, subtree: false });
-      } else {
-        // оновлення існуючого чипа
-        const chip = box.querySelector('.yse-chip');
-        if (chip) {
-          chip.className = `yse-chip ${chipClass}`;
-          chip.textContent = statusText;
-        }
+        yseStatusBoxRef = box;
+        yseApplyBoxLookFromLayer(yseSearchLayerRef, yseStatusBoxRef);
+        yseSearchLayerRef.appendChild(box);
       }
+    }
+    yseRenderChipText(yseDesiredStatusText || '');
+    if (yseStatusBoxRef) yseStatusBoxRef.classList.add('yse-no-bg');
 
-      if (statusText && box) { box.classList.add('yse-no-bg'); }
-      dlog('OmniSearch: замінено на чип статусу без іконки:', statusText);
-    }, 10000);
-  } catch (e) {
-    derr('setOmniSearchBadge error:', e);
+    if (!yseLayerObserver) {
+      yseLayerObserver = new MutationObserver(() => { yseEnsureBadgeMounted(); });
+      yseLayerObserver.observe(yseSearchLayerRef, { childList: true, subtree: false });
+    }
+    yseCloseOmniOverlays();
   }
-}
+  function setOmniSearchBadge(statusText) {
+    try {
+      yseDesiredStatusText = String(statusText || '').trim();
+      yseEnsureBadgeMounted();
+      let tries = 0;
+      const iv = setInterval(() => {
+        if (++tries > 40) { clearInterval(iv); return; }
+        if (yseFindSearchLayer()) { yseEnsureBadgeMounted(); clearInterval(iv); }
+      }, 500);
+      const inp = document.querySelector('input#query-input');
+      if (inp) inp.setAttribute('placeholder', yseDesiredStatusText);
+    } catch (e) {
+      try { console.error('[YSE] setOmniSearchBadge error:', e); } catch(_) {}
+    }
+  }
+  function yseInitStatusBadge() {
+    try { yseEnsureBadgeMounted(); yseCloseOmniOverlays(); } catch(_) {}
+  }
+  yseInitStatusBadge();
+  window.addEventListener('load', yseInitStatusBadge);
+  setTimeout(yseInitStatusBadge, 1500);
+  setInterval(() => { if (yseFindSearchLayer()) yseEnsureBadgeMounted(); }, 3000);
+  /* === /OmniSearch Status ===================================================== */
 
+  // ---------- Status Cache (пер-канальний) ----------
+  const STATUS_CACHE_LS_KEY = 'yse_status_cache_v1';
+  function statusCacheLoad() {
+    try {
+      const raw = localStorage.getItem(STATUS_CACHE_LS_KEY);
+      const json = raw ? JSON.parse(raw) : {};
+      return (json && typeof json === 'object') ? json : {};
+    } catch (_) { return {}; }
+  }
+  function statusCacheSave(map) { try { localStorage.setItem(STATUS_CACHE_LS_KEY, JSON.stringify(map || {})); } catch (_) {} }
+  function statusCacheGet(channelId) { if (!channelId) return null; const map = statusCacheLoad(); return map[channelId]?.status || null; }
+  function statusCacheSet(channelId, statusText) {
+    if (!channelId) return;
+    const map = statusCacheLoad();
+    map[channelId] = { status: String(statusText || '').trim(), ts: Date.now() };
+    statusCacheSave(map);
+  }
+  function getChannelIdFromUrl() { return (location.href.match(/\/channel\/([^/]+)/)?.[1]) || ''; }
+  function showCachedStatusForCurrentChannel() {
+    const cid = getChannelIdFromUrl();
+    const cached = statusCacheGet(cid);
+    if (cached) {
+      setOmniSearchBadge(cached);
+      dlog('Cached status shown:', cached);
+    }
+  }
+  function setTemporaryParsingStatus() {
+    const temp = 'очікування парсингу…';
+    setOmniSearchBadge(temp);
+  }
 
+  // ---------- прибирання "Вийти" ----------
   function removeSignOutMenuItem() {
     try {
       const link = document.querySelector(
@@ -368,18 +362,15 @@ function setOmniSearchBadge(statusText) {
     }
   }
 
-  // ---------- навігаційні кліки (імітація) ----------
-  // Клік по пункту «Аналітика» (без прямого переходу)
+  // ---------- навігаційні кліки ----------
   function clickAnalyticsTab(done) {
     dlog('Відкриваємо Аналітику (клік)…');
-    // пробуємо кілька варіантів
     const tryClick = () => {
       const el =
         document.querySelector('a[title*="Аналитика"], a[title*="Analytics"], a[href*="/analytics"]') ||
-        document.querySelector('#menu-paper-icon-item-2'); // запасний
+        document.querySelector('#menu-paper-icon-item-2');
       if (el) {
         el.click();
-        // чекаємо, поки на екрані з’являться елементи overview
         waitForElement('.metric-value.style-scope.yta-latest-activity-card', () => {
           dlog('Аналітика відкрита');
           if (typeof done === 'function') done();
@@ -389,18 +380,15 @@ function setOmniSearchBadge(statusText) {
       return false;
     };
     if (!tryClick()) {
-      // якщо елемент ще не в DOM — чекаємо хедер і пробуємо знову
       waitForElement('ytd-app, ytcp-header', () => { tryClick(); }, 20000);
     }
   }
 
-  // клік по вкладці "Контент" (і ПАУЗА 3с перед парсингом)
   function clickContentTab() {
     waitForElement('#content', (contentTab) => {
       contentTab.click();
       dlog('Клік по #content виконано, чекаємо приховання #right-side-bar…');
 
-      // 🆕 старт динамічного секундоміра "⏱️ Контент Nс"
       try {
         if (contentWaitTimer) { clearInterval(contentWaitTimer); contentWaitTimer = null; }
         let secs = 0;
@@ -409,23 +397,18 @@ function setOmniSearchBadge(statusText) {
           secs += 1;
           setButtonStatus(`⏱️ Контент ${secs}с`);
         }, 1000);
-      } catch (e) {
-        // не критично
-      }
+      } catch (e) { /* no-op */ }
 
-      // очікування поки #right-side-bar стане display:none
       const start = Date.now();
       const iv = setInterval(() => {
         const el = document.querySelector('#right-side-bar');
         if (el && el.style.display === 'none') {
           clearInterval(iv);
-          // 🆕 стоп секундоміра
           if (contentWaitTimer) { clearInterval(contentWaitTimer); contentWaitTimer = null; }
           dlog('#right-side-bar приховано, парсимо Content');
           extractContentDataAndSend();
-        } else if (Date.now() - start > 20000) { // таймаут 20с
+        } else if (Date.now() - start > 20000) {
           clearInterval(iv);
-          // 🆕 стоп секундоміра (fallback)
           if (contentWaitTimer) { clearInterval(contentWaitTimer); contentWaitTimer = null; }
           derr('Не дочекалися приховування #right-side-bar, викликаю fallback');
           extractContentDataAndSend();
@@ -438,20 +421,17 @@ function setOmniSearchBadge(statusText) {
   function onExtractClick() {
     try {
       dlog('Клік по кнопці "Дані"');
-      setButtonStatus('🔄 Починаю…');   // старт
+      setButtonStatus('🔄 Починаю…');
+      setTemporaryParsingStatus();           // 🆕 одразу ставимо очікування
       forceCollect = true;
       removeSignOutMenuItem();
 
-      // 0) channelId з поточного URL (без переходів)
       overviewChannelId = (location.href.match(/\/channel\/([^/]+)/)?.[1]) || '';
       dlog('channelId:', overviewChannelId || '(не знайдено)');
 
-      // 1) Відкриваємо «Аналітика» кліком, далі — Overview → Lifetime → 3с → парсинг
       clickAnalyticsTab(() => {
         extractOverviewData(() => {
-          // 2) Після Overview — клікаємо Content (із 3с паузою всередині clickContentTab)
           clickContentTab(() => {
-            // 3) Парсимо Content і надсилаємо
             extractContentDataAndSend();
           });
         });
@@ -462,46 +442,40 @@ function setOmniSearchBadge(statusText) {
     }
   }
 
-  // >>> ОНОВЛЕНО згідно ТЗ: імітація кліку періоду → Lifetime → 3с очікування → парсинг → monetization + 4-й блок
+  // >>> Відкриття періоду → Lifetime → 3с → парсинг Overview
   function extractOverviewData(callback) {
     try {
       dlog('Відкриваємо період і обираємо Lifetime…');
-      // кнопка відкриття дропдауну періоду
       waitForElement('div[role="button"].has-label.borderless.container.style-scope.ytcp-dropdown-trigger', (periodBtn) => {
         try {
           periodBtn.click();
-          // пункт меню Lifetime
           waitForElement('[test-id="lifetime"]', (lifeItem) => {
             lifeItem.click();
             dlog('Lifetime натиснуто, очікуємо 3с…');
 
             setTimeout(() => {
-              // тепер парсимо оверв’ю
               waitForElement('.metric-value.style-scope.yta-latest-activity-card', () => {
                 try {
                   const metricElems = document.querySelectorAll('.metric-value.style-scope.yta-latest-activity-card');
-                  const subscribers = parseNumber(metricElems[0]?.textContent || '0');  // залишаємо базовий парсер
-                  const views48h = parseNumber(metricElems[1]?.textContent || '0');     // залишаємо базовий парсер
+                  const subscribers = parseNumber(metricElems[0]?.textContent || '0');
+                  const views48h = parseNumber(metricElems[1]?.textContent || '0');
 
-                  // totals: [0] = views (за період), [1] = watch hours (за період)
                   const totals = Array.from(document.querySelectorAll('#metric-total')).map(el => (el.textContent || '').trim());
-                  const viewsPeriod = parseNumberWithUnits(totals[0] || '0');  // підтримка тыс/млн
-                  const hoursPeriod = parseNumberWithUnits(totals[1] || '0');  // підтримка тыс/млн
+                  const viewsPeriod = parseNumberWithUnits(totals[0] || '0');
+                  const hoursPeriod = parseNumberWithUnits(totals[1] || '0');
 
                   overviewChannel = document.querySelector('#entity-name.entity-name')?.textContent.trim() || 'Без назви';
-                  overviewDateUTC = getDateInLA(); // 🆕 LA date
+                  overviewDateUTC = getDateInLA();
                   oViews48h = views48h;
                   oViewsPeriod = viewsPeriod;
                   oHoursPeriod = hoursPeriod;
                   oSubscribers = subscribers;
 
-                  // підрахунок блоків yta-key-metric-block + 4-й блок (дохід)
                   const blocks = document.querySelectorAll('div#container.layout.vertical.style-scope.yta-key-metric-block');
-                  monetization = (blocks.length === 4); // 3 → false, 4 → true
+                  monetization = (blocks.length === 4);
                   if (blocks[3]) {
                     const m = blocks[3].querySelector('#metric-total');
                     let val = (m?.textContent || blocks[3].innerText || '').trim();
-                    // одразу нормалізуємо (прибирає $, конвертує тыс/млн)
                     fourthMetric = String(parseNumberWithUnits(val));
                   } else {
                     fourthMetric = '0';
@@ -515,11 +489,10 @@ function setOmniSearchBadge(statusText) {
                   setButtonStatus('❌ Помилка');
                 }
               });
-            }, 3000); // обов’язкова пауза 3 секунди
+            }, 3000);
           });
         } catch (e) {
           derr('extractOverviewData period click error (fallback без Lifetime):', e);
-          // Фолбек: парсимо без зміни періоду (але з тією ж нормалізацією значень)
           waitForElement('.metric-value.style-scope.yta-latest-activity-card', () => {
             try {
               const metricElems = document.querySelectorAll('.metric-value.style-scope.yta-latest-activity-card');
@@ -531,7 +504,7 @@ function setOmniSearchBadge(statusText) {
               const hoursPeriod = parseNumberWithUnits(totals[1] || '0');
 
               overviewChannel = document.querySelector('#entity-name.entity-name')?.textContent.trim() || 'Без назви';
-              overviewDateUTC = getDateInLA(); // 🆕 LA date (fallback)
+              overviewDateUTC = getDateInLA();
               oViews48h = views48h;
               oViewsPeriod = viewsPeriod;
               oHoursPeriod = hoursPeriod;
@@ -564,75 +537,27 @@ function setOmniSearchBadge(statusText) {
   }
 
   // ---------- CONTENT ----------
-  // Парсер значень з різними суфіксами/форматами
-  function parseMetric(raw, type) {
-    let text = String(raw || '')
-      .replace(/\u00A0/g, ' ')  // NBSP → space
-      .trim()
-      .toLowerCase();
-
-    // avgViewDuration: залишаємо формат m:ss як є
-    if (type === 'avg') {
-      const mmss = text.match(/^(\d{1,2}):([0-5]\d)$/);
-      if (mmss) return mmss[0]; // напр. "5:08"
-      return text;              // фолбек — віддаємо як є
-    }
-
-    // Витягаємо число (з комою або крапкою)
-    const numMatch = text.replace(',', '.').match(/-?\d+(\.\d+)?/);
-    const base = numMatch ? parseFloat(numMatch[0]) : NaN;
-
-    if (type === 'ctr') {
-      // Для CTR завжди повертаємо з символом %
-      if (isNaN(base)) return '';
-      // якщо в оригіналі була десяткова частина — лишаємо 1 знак
-      const withDecimal = /[.,]\d/.test(text);
-      const val = withDecimal ? base.toFixed(1) : String(Math.round(base));
-      return `${val}%`;
-    }
-
-    if (type === 'impr') {
-      if (isNaN(base)) return 0;
-
-      // Множники: "тыс.", "тис.", "k" → ×1000; "млн", "m" → ×1e6
-      let mul = 1;
-      if (/(тыс|тис|k)\.?/.test(text)) mul = 1000;
-      if (/(млн|m)\.?/.test(text))     mul = 1_000_000;
-
-      return Math.round(base * mul); // 657,1 тыс. → 657100
-    }
-
-    // За замовчуванням — повертаємо число без форматування
-    return isNaN(base) ? '' : base;
-  }
-
   function extractContentDataAndSend() {
     try {
-      // 🆕 безпечне вимкнення секундоміра, якщо ще працює
       if (contentWaitTimer) { clearInterval(contentWaitTimer); contentWaitTimer = null; }
 
-      // Порядок на /analytics/tab-content:
-      // [0] Views, [1] Impressions, [2] CTR, [3] Average view duration
       const totals = Array.from(document.querySelectorAll('#metric-total'))
         .map(el => (el.textContent || '').trim());
 
-      // Impressions з підтримкою тыс./млн (k/m)
       const impressions = parseNumberWithUnits(totals[1] || '0');
 
-      // CTR завжди з відсотком (7.9%)
       const ctrText = (totals[2] || '').replace(/\u00A0/g, ' ').trim().toLowerCase();
       const ctrNumMatch = ctrText.replace(',', '.').match(/-?\d+(\.\d+)?/);
       const ctr = ctrNumMatch ? `${(+ctrNumMatch[0]).toFixed(/[.,]\d/.test(ctrText) ? 1 : 0)}%` : '';
 
-      // Average view duration у форматі m:ss — залишаємо як є
       const avgRaw = (totals[3] || '').trim();
       const avgViewDuration = /^\d{1,2}:[0-5]\d$/.test(avgRaw) ? avgRaw : avgRaw;
 
-      contentDateUTC = getDateInLA(); // 🆕 LA date
+      contentDateUTC = getDateInLA();
       const contentMetrics = { impressions, ctr, avgViewDuration };
 
       dlog('Content metrics (normalized):', contentMetrics);
-      setButtonStatus('✅ Контент'); // контент зпаршено
+      setButtonStatus('✅ Контент');
       goToVideosAndExtractCount(contentMetrics);
     } catch (e) {
       derr('extractContentDataAndSend error:', e);
@@ -641,105 +566,101 @@ function setOmniSearchBadge(statusText) {
   }
 
   function goToVideosAndExtractCount(contentMetrics) {
-  dlog('Відкриваємо головне меню "Контент" (клік)…');
+    dlog('Відкриваємо головне меню "Контент" (клік)…');
 
-  // клік по пункту "Контент" у лівому меню
-  const candidates = [
-    '#menu-paper-icon-item-1',                         // часто саме він
-    'a[title*="Контент"]',
-    'a[title*="Content"]',
-    'a[href*="/content"]',
-    'a[href*="/videos"]',
-    '#content'                                         // запасний (у деяких версіях)
-  ];
+    const candidates = [
+      '#menu-paper-icon-item-1',
+      'a[title*="Контент"]',
+      'a[title*="Content"]',
+      'a[href*="/content"]',
+      'a[href*="/videos"]',
+      '#content'
+    ];
 
-  const clickEl = (el) => {
-    try {
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      return true;
-    } catch (e) {
-      derr('Помилка кліку по пункту меню "Контент":', e);
-      return false;
-    }
-  };
+    const clickEl = (el) => {
+      try {
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return true;
+      } catch (e) {
+        derr('Помилка кліку по пункту меню "Контент":', e);
+        return false;
+      }
+    };
 
-  // 1) шукаємо елемент меню і клікаємо
-  let clicked = false;
-  const startFind = Date.now();
-  const findIv = setInterval(() => {
-    for (const sel of candidates) {
-      const el = document.querySelector(sel);
-      if (el && clickEl(el)) {
-        dlog('Клік по пункту меню "Контент":', sel);
-        clicked = true;
+    let clicked = false;
+    const startFind = Date.now();
+    const findIv = setInterval(() => {
+      for (const sel of candidates) {
+        const el = document.querySelector(sel);
+        if (el && clickEl(el)) {
+          dlog('Клік по пункту меню "Контент":', sel);
+          clicked = true;
+          clearInterval(findIv);
+          waitForUrlThenParse();
+          return;
+        }
+      }
+      if (Date.now() - startFind > 15000) {
         clearInterval(findIv);
+        dlog('Не знайшов пункт "Контент" за 15с — продовжую фолбеком очікування URL…');
         waitForUrlThenParse();
-        return;
+      }
+    }, 250);
+
+    function waitForUrlThenParse() {
+      const t0 = Date.now();
+      const urlIv = setInterval(() => {
+        const p = location.pathname;
+        if (p.includes('/content') || p.includes('/videos')) {
+          clearInterval(urlIv);
+          dlog('URL = сторінка Контент, одразу читаємо кількість (без 3с)…');
+          readTotalAndSend();
+        } else if (Date.now() - t0 > 15000) {
+          clearInterval(urlIv);
+          dlog('Не дочекались переходу на /content|/videos за 15с (fallback). Читаємо одразу…');
+          readTotalAndSend();
+        }
+      }, 200);
+    }
+
+    function readTotalAndSend() {
+      try {
+        waitForElement('.page-description', () => {
+          const el = document.querySelector('.page-description');
+          const rawText = el?.textContent || '';
+          const match = rawText.match(/(?:из|of|з)\s*(?:примерно|approximately)?\s*(\d+)/i);
+          const total = match ? parseInt(match[1].replace(/\s/g, ''), 10) : NaN;
+
+          if (isNaN(total)) { derr('Не вдалося визначити total з .page-description'); return; }
+
+          const combinedData =
+            `${overviewChannel};${overviewDateUTC};${oSubscribers};${oViewsPeriod};${oHoursPeriod};${oViews48h};${overviewChannel};` +
+            `${contentMetrics.impressions};${contentMetrics.ctr}${'\u200B'};${contentMetrics.avgViewDuration}${'\u200B'};${contentDateUTC};${total}` +
+            `;${monetization};${fourthMetric};${overviewChannelId}`;
+
+          // 🆕 Авто-статус + кеш
+          const autoStatus = computeAutoStatus({
+            monetizationFlag: monetization,
+            views48h: oViews48h,
+            hoursLifetime: oHoursPeriod,
+            subscribers: oSubscribers,
+            totalVideos: total
+          });
+          setOmniSearchBadge(autoStatus);
+          statusCacheSet(overviewChannelId || getChannelIdFromUrl(), autoStatus);
+
+          dlog('Відправляємо:', combinedData);
+          setButtonStatus('✉️ Відправка');
+          sendToSheet(combinedData, 'combined');
+          setButtonStatus('✅ Готово');
+        }, 20000);
+      } catch (e) {
+        derr('readTotalAndSend error:', e);
+        setButtonStatus('❌ Помилка');
       }
     }
-    if (Date.now() - startFind > 15000) {
-      clearInterval(findIv);
-      dlog('Не знайшов пункт "Контент" за 15с — продовжую фолбеком очікування URL…');
-      waitForUrlThenParse(); // все одно перейдемо до очікування URL
-    }
-  }, 250);
-
-  // 2) чекаємо ПЕРЕХІД на сторінку менеджера контенту, одразу читаємо .page-description (БЕЗ 3с таймауту)
-  function waitForUrlThenParse() {
-    const t0 = Date.now();
-    const urlIv = setInterval(() => {
-      const p = location.pathname;
-      if (p.includes('/content') || p.includes('/videos')) {
-        clearInterval(urlIv);
-        dlog('URL = сторінка Контент, одразу читаємо кількість (без 3с)…');
-        readTotalAndSend(); // ← без затримки
-      } else if (Date.now() - t0 > 15000) {
-        clearInterval(urlIv);
-        dlog('Не дочекались переходу на /content|/videos за 15с (fallback). Читаємо одразу…');
-        readTotalAndSend(); // ← без затримки
-      }
-    }, 200);
   }
-
-  // 3) зчитуємо кількість відео і шлемо
-  function readTotalAndSend() {
-    try {
-      // у менеджері контенту кількість зазвичай у .page-description
-      waitForElement('.page-description', () => {
-        const el = document.querySelector('.page-description');
-        const rawText = el?.textContent || '';
-        // підтримуємо декілька мовних варіантів
-        const match = rawText.match(/(?:из|of|з)\s*(?:примерно|approximately)?\s*(\d+)/i);
-        const total = match ? parseInt(match[1].replace(/\s/g, ''), 10) : NaN;
-
-        if (isNaN(total)) { derr('Не вдалося визначити total з .page-description'); return; }
-
-        const combinedData =
-          `${overviewChannel};${overviewDateUTC};${oSubscribers};${oViewsPeriod};${oHoursPeriod};${oViews48h};${overviewChannel};` +
-          `${contentMetrics.impressions};${contentMetrics.ctr}${'\u200B'};${contentMetrics.avgViewDuration}${'\u200B'};${contentDateUTC};${total}` +
-          `;${monetization};${fourthMetric};${overviewChannelId}`;
-// 🆕 Авто-статус у пошуку за правилами
-const autoStatus = computeAutoStatus({
-  monetizationFlag: monetization,
-  views48h: oViews48h,
-  hoursLifetime: oHoursPeriod,   // Lifetime годинник уже нормалізований
-  subscribers: oSubscribers,
-  totalVideos: total
-});
-setOmniSearchBadge(autoStatus);
-
-        dlog('Відправляємо:', combinedData);
-        setButtonStatus('✉️ Відправка'); // статус перед надсиланням
-        sendToSheet(combinedData, 'combined'); // лишаємо існуючу відправку/параметри
-        setButtonStatus('✅ Готово');         // після завершення запиту (відповідь не очікуємо)
-      }, 20000);
-    } catch (e) {
-      derr('readTotalAndSend error:', e);
-      setButtonStatus('❌ Помилка');
-    }
-  }
-}
 
   // ---------- відправка ----------
   function sendToSheet(value, mode) {
@@ -756,34 +677,33 @@ setOmniSearchBadge(autoStatus);
   obs.observe(document.documentElement, { childList: true, subtree: true });
   ensureHeaderButton();
 
-  // тримаємо кнопку "Дані" живою (ре-інʼєкція, якщо YT перерисував хедер)
   const keepBtnAliveIv = setInterval(() => {
     if (!getExtractButton()) ensureHeaderButton();
   }, 1000);
 
-  // автоприбирання пункту "Вийти" (спостерігач за всім body)
   const signOutObserver = new MutationObserver(() => removeSignOutMenuItem());
   signOutObserver.observe(document.body, { childList: true, subtree: true });
-
-  // первинний виклик, щоб прибрати одразу
   removeSignOutMenuItem();
 
+  // показати кешований статус одразу
+  showCachedStatusForCurrentChannel();
+
   dlog('Script ready');
-/* === GeoBadge add-on (Google Sheet overrides + CACHE, 2025-08) =================
-   Політика:
-   - Спершу читаємо кеш із localStorage (миттєвий рендер).
-   - Якщо для каналу немає GEO у кеші → один раз повністю оновлюємо кеш із таблиці
-     і повторюємо пошук.
-   - Якщо й після оновлення немає → показуємо "пауза".
-=============================================================================== */
+
+ /* === GeoBadge add-on (Google Sheet overrides + CACHE) =======================
+   Логіка:
+   1) Підняти кеш із localStorage → миттєвий рендер.
+   2) Якщо для каналу немає GEO у кеші → один раз оновити кеш із таблиці і повторити.
+   3) Якщо і після оновлення немає → показати "пауза".
+============================================================================= */
 
 const GEO_OVERRIDES_URL = "https://script.google.com/macros/s/AKfycbzqSQtJJp3gL5y2R3c3ABWx-aWcG8U9jcF_k-WOjdAfFclJ3OREtJcU4rEEs2snYV1K/exec";
-const GEO_CACHE_LS_KEY = "yse_geo_cache_v2"; // bump версії при зміні формату
+const GEO_CACHE_LS_KEY  = "yse_geo_cache_v2"; // bump при зміні формату
 
-let geoMap = Object.create(null);   // { normalizedName: "Україна", ... }
+let geoMap = Object.create(null);     // { normalizedName: "Україна", ... }
 let overridesReady = false;
 let overridesLoading = false;
-let overridesWaiters = [];          // колбек-и, що чекають на оновлення
+let overridesWaiters = [];            // колбеки, які чекають завершення завантаження
 
 function normalizeName(s) {
   return String(s || "")
@@ -818,7 +738,7 @@ function saveCacheToLS() {
 
 // ---- NETWORK LOAD (повне оновлення) ----
 function loadGeoOverrides(cb) {
-  // якщо вже вантажиться — додаємося в чергу
+  // якщо вже вантажимо — стаємо в чергу
   if (overridesLoading) { if (cb) overridesWaiters.push(cb); return; }
   overridesLoading = true;
 
@@ -842,10 +762,9 @@ function loadGeoOverrides(cb) {
           console.warn("[YSE] GEO overrides: unexpected response");
         }
       } catch (e) {
-        console.error("[YSE] overrides parse error:", e);
+        console.error("[YSE] GEO overrides parse error:", e);
       } finally {
         overridesLoading = false;
-        // повідомляємо всіх, хто чекав
         (overridesWaiters.splice(0) || []).forEach(fn => { try { fn(); } catch(_) {} });
         cb && cb();
       }
@@ -860,40 +779,16 @@ function loadGeoOverrides(cb) {
 
 // ---- Мапа GEO → прапор ----
 const GEO_FLAGS = {
-  "Японія": "🇯🇵",
-  "Польща": "🇵🇱",
-  "Німеччина": "🇩🇪",
-  "Арабія": "🇸🇦",
-  "Нідерланди": "🇳🇱",
-  "Іспанія": "🇪🇸",
-  "Ру": "🇷🇺",
-  "Туреччина": "🇹🇷",
-  "Португалія": "🇵🇹",
-  "Італія": "🇮🇹",
-  "Китай": "🇨🇳",
-  "Корея": "🇰🇷",
-  "Румунія": "🇷🇴",
-  "Греція": "🇬🇷",
-  "Україна": "🇺🇦",
-  "Індонезія": "🇮🇩",
-  "Угорщина": "🇭🇺",
-  "США": "🇺🇸",
-  "Індія": "🇮🇳",
-  "Фінляндія": "🇫🇮",
-  "Ізраїль": "🇮🇱",
-  "Норвегія": "🇳🇴",
-  "Малайзія": "🇲🇾",
-  "Швеція": "🇸🇪",
-  "Франція": "🇫🇷",
-  "Чехія": "🇨🇿",
-  "Філіпіни": "🇵🇭",
-  "Сербія": "🇷🇸",
-  "Тайланд": "🇹🇭",
-  "Данія": "🇩🇰"
+  "Японія": "🇯🇵", "Польща": "🇵🇱", "Німеччина": "🇩🇪", "Арабія": "🇸🇦", "Нідерланди": "🇳🇱",
+  "Іспанія": "🇪🇸", "Ру": "🇷🇺", "Туреччина": "🇹🇷", "Португалія": "🇵🇹", "Італія": "🇮🇹",
+  "Китай": "🇨🇳", "Корея": "🇰🇷", "Румунія": "🇷🇴", "Греція": "🇬🇷", "Україна": "🇺🇦",
+  "Індонезія": "🇮🇩", "Угорщина": "🇭🇺", "США": "🇺🇸", "Індія": "🇮🇳", "Фінляндія": "🇫🇮",
+  "Ізраїль": "🇮🇱", "Норвегія": "🇳🇴", "Малайзія": "🇲🇾", "Швеція": "🇸🇪", "Франція": "🇫🇷",
+  "Чехія": "🇨🇿", "Філіпіни": "🇵🇭", "Сербія": "🇷🇸", "Тайланд": "🇹🇭", "Данія": "🇩🇰"
 };
 function flagForGeo(label) { return GEO_FLAGS[label] || "🌐"; }
 
-// ---- DOM helpers ----
+// ---- Styles ----
 (function injectGeoStyles(){
   if(document.getElementById('yse-geo-inline-after')) return;
   const style=document.createElement('style');
@@ -909,9 +804,9 @@ function flagForGeo(label) { return GEO_FLAGS[label] || "🌐"; }
       white-space:nowrap !important;
       vertical-align:baseline !important;
     }
-    yt-formatted-string#channel-title[data-geo-label]::afteR,
-    ytd-account-item-renderer #channel-title[data-geo-label]::afteR,
-    #entity-name.entity-name[data-geo-label]::afteR {
+    yt-formatted-string#channel-title[data-geo-label]::after,
+    ytd-account-item-renderer #channel-title[data-geo-label]::after,
+    #entity-name.entity-name[data-geo-label]::after {
       content: " " attr(data-geo-label);
       font:500 11px/1.2 Roboto,Arial,sans-serif;
       white-space:nowrap;
@@ -930,6 +825,7 @@ function flagForGeo(label) { return GEO_FLAGS[label] || "🌐"; }
   document.head.appendChild(style);
 })();
 
+// ---- Рендер ----
 function setInlineAfterLabel(el, geoText) {
   if (!el) return;
   const text = `${flagForGeo(geoText)} ${geoText}`;
@@ -953,14 +849,10 @@ function setInlineAfterLabel(el, geoText) {
   }
 }
 
-// ---- Кеш-пошук з авто-оновленням ----
+// ---- Пошук у кеші з автооновленням при промаху ----
 function ensureGeoForName(normName, cb) {
-  // 1) якщо вже є в кеші — миттєво
   if (geoMap[normName]) { cb(geoMap[normName]); return; }
-  // 2) інакше — один раз оновлюємо повністю кеш і пробуємо знову
-  loadGeoOverrides(() => {
-    cb(geoMap[normName] || "пауза");
-  });
+  loadGeoOverrides(() => cb(geoMap[normName] || 'пауза'));
 }
 
 function renderOne(el) {
@@ -985,14 +877,14 @@ function initRenderers() {
   renderDrawer();
 }
 
-// 1) Миттєво підняти кеш із LS, щоби не чекати мережу
+// 1) Миттєво підняти кеш із LS
 loadCacheFromLS();
 initRenderers();
 
 // 2) Паралельно оновити повний кеш із Google Sheet (свіжість)
 loadGeoOverrides(() => { initRenderers(); });
 
-// 3) Спостерігачі за апдейтом DOM
+// 3) Спостерігачі за DOM
 const moTargets=[document.body, document.querySelector('ytd-app')||document.documentElement].filter(Boolean);
 const geoMo=new MutationObserver(()=>initRenderers());
 moTargets.forEach(t=>geoMo.observe(t,{childList:true,subtree:true}));
