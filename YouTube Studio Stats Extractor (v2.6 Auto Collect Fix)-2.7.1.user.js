@@ -8,6 +8,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
 // @run-at       document-idle
+// @require https://cdn.jsdelivr.net/npm/tinyld/dist/tinyld.min.js
 // ==/UserScript==
 
 (function () {
@@ -768,5 +769,222 @@ setOmniSearchBadge(autoStatus);
   removeSignOutMenuItem();
 
   dlog('Script ready');
+   /* === LangBadge add-on (tinyld + smart fallback, ::after inline, 2025-08) ===
+     Що робить:
+       • Додає прапор + назву мови справа від тайтлу як псевдоконтент ::after
+       • Працює в двох місцях:
+           1) ytd-account-item-renderer #channel-title (дроплист акаунтів)
+           2) #entity-name (лівий дровер)
+       • Не ламає верстку: без чіпів, без додаткових елементів, ширина тайтлу
+         штучно розширюється під "Назва + Мова".
+     Детектор:
+       • Спершу tinyld (UMD) з @require
+       • Якщо tinyld недоступний/повернув 'la'/'und' — локальна евристика (DE/IT/EN + кирилиця)
+  ============================================================================ */
+
+  // ====== мапи назв і прапорів (ISO 639-1) ==================================
+  const ISO2_TO_LABEL = {
+    uk:'Ukrainian', ru:'Russian', be:'Belarusian', bg:'Bulgarian',
+    pl:'Polish', cs:'Czech', sk:'Slovak', sl:'Slovenian',
+    hr:'Croatian', sr:'Serbian', mk:'Macedonian',
+    en:'English', de:'German', nl:'Dutch', fr:'French', es:'Spanish',
+    pt:'Portuguese', it:'Italian', ro:'Romanian', hu:'Hungarian',
+    tr:'Turkish', ar:'Arabic', he:'Hebrew', el:'Greek',
+    ja:'Japanese', ko:'Korean', zh:'Chinese',
+    vi:'Vietnamese', id:'Indonesian', ms:'Malay', th:'Thai'
+  };
+  const iso2Label = (code) => ISO2_TO_LABEL[code] || (code ? code.toUpperCase() : 'Unknown');
+
+  const LANG_FLAG = {
+    de:'🇩🇪', it:'🇮🇹', en:'🇬🇧', uk:'🇺🇦', ru:'🇷🇺', pl:'🇵🇱', cs:'🇨🇿', sk:'🇸🇰',
+    sl:'🇸🇮', hr:'🇭🇷', sr:'🇷🇸', mk:'🇲🇰', nl:'🇳🇱', fr:'🇫🇷', es:'🇪🇸', pt:'🇵🇹',
+    ro:'🇷🇴', hu:'🇭🇺', tr:'🇹🇷', ar:'🇸🇦', he:'🇮🇱', el:'🇬🇷', ja:'🇯🇵', ko:'🇰🇷',
+    zh:'🇨🇳', vi:'🇻🇳', id:'🇮🇩', ms:'🇲🇾', th:'🇹🇭'
+  };
+  const flagFor = (code) => LANG_FLAG[code] || '🌐';
+
+  // ====== tinyld детектор (UMD як функція або об'єкт із .detect) =============
+  function getDetector() {
+    const t = window.tinyld;
+    if (!t) return null;
+    if (typeof t === 'function') return { detect: (txt) => t(txt) };
+    if (typeof t.detect === 'function') return t;
+    return null;
+  }
+
+  // ====== евристики (DE/IT/EN + кирилиця, діакритика, стоп-слова) ============
+  const DE_MARKERS = [' der ',' die ',' das ',' und ',' mit ',' für ',' nicht ',' berühren ',' glück ',' zum ',' vom ',' einem ',' einer ',' über '];
+  const IT_MARKERS = [' di ',' e ',' la ',' le ',' gli ',' delle ',' degli ',' nelle ',' emozioni ',' nascosto ',' nascoste ',' sotto ',' tra '];
+  const EN_MARKERS = [' and ',' with ',' for ',' the ',' hidden ',' moment ',' touch '];
+  const DE_DIACRITICS = /[äöüß]/i;
+  const IT_DIACRITICS = /[àèéìíîòóù]/i;
+  const HAS_CYRILLIC = /[А-Яа-яЁёІіЇїЄєҐґ]/;
+
+  function scoreByMarkers(text, markers) { let s=0; for (const m of markers) if (text.includes(m)) s++; return s; }
+  function heuristicLangCode(textRaw) {
+    const t = ' ' + String(textRaw || '').toLowerCase().normalize('NFC') + ' ';
+    if (HAS_CYRILLIC.test(t)) return 'uk';
+    if (DE_DIACRITICS.test(t)) return 'de';
+    if (IT_DIACRITICS.test(t)) return 'it';
+    if (/\b(die|der|zum|vom|über)\b/.test(t)) return 'de';
+    if (/\b(di|gli|delle|degli|nascoste|emozioni)\b/.test(t)) return 'it';
+    const de = scoreByMarkers(t, DE_MARKERS);
+    const it = scoreByMarkers(t, IT_MARKERS);
+    const en = scoreByMarkers(t, EN_MARKERS);
+    if (de > it && de >= 1) return 'de';
+    if (it > de && it >= 1) return 'it';
+    if (en >= 2 && en >= de && en >= it) return 'en';
+    return null;
+  }
+
+  // ====== основне визначення мови (код + назва + прапор) =====================
+  function detectLang(text) {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!clean) return { label:'Unknown', code:null, flag:'🌐' };
+
+    if (clean.length <= 3) {
+      if (HAS_CYRILLIC.test(clean)) return { label:'Ukrainian', code:'uk', flag:flagFor('uk') };
+      return { label:'Unknown', code:null, flag:'🌐' };
+    }
+
+    // 1) tinyld
+    try {
+      const det = getDetector();
+      if (det) {
+        const out = det.detect(clean);
+        let code = null;
+        if (typeof out === 'string') code = out;
+        else if (Array.isArray(out) && out[0]) code = out[0].lang || out[0].code || out[0].language;
+        else if (out && typeof out === 'object') code = out.lang || out.code || out.language;
+        if (code && code !== 'la' && code !== 'und' && code !== 'xx') {
+          return { label: iso2Label(code), code, flag: flagFor(code) };
+        }
+      }
+    } catch {}
+
+    // 2) локальна евристика
+    const h = heuristicLangCode(clean);
+    if (h) return { label: iso2Label(h), code: h, flag: flagFor(h) };
+
+    return { label:'Unknown', code:null, flag:'🌐' };
+  }
+
+  // ====== стилі: ::after + розширення блоку назви під "Назва + Мова" =========
+  (function injectLangInlineAfterStyles(){
+    if (document.getElementById('yse-lang-inline-after')) return;
+    const style = document.createElement('style');
+    style.id = 'yse-lang-inline-after';
+    style.textContent = `
+      /* робимо сам тайтл гнучким під «Назва + Мова» */
+      ytd-account-item-renderer #channel-title,
+      #entity-name.entity-name {
+        display: inline-block !important;
+        width: auto !important;
+        max-width: none !important;
+        white-space: nowrap !important;
+        vertical-align: baseline !important;
+      }
+      /* показуємо праворуч прапор + назву мови як псевдоконтент */
+      ytd-account-item-renderer #channel-title[data-lang-label]::after,
+      #entity-name.entity-name[data-lang-label]::after {
+        content: " " attr(data-lang-label);
+        font: 500 11px/1.2 Roboto, Arial, sans-serif;
+        white-space: nowrap;
+        opacity: .85;
+        margin-left: 6px;
+      }
+    `;
+    document.head.appendChild(style);
+  })();
+
+  // ====== записуємо лейбл у data-атрибут (ніяких нових DOM-вузлів) ===========
+  function setInlineAfterLabel(targetEl, langObj){
+    if (!targetEl || !langObj) return;
+    targetEl.setAttribute('data-lang-label', `${langObj.flag} ${langObj.label}`);
+  }
+
+  // ====== readiness helpers ==================================================
+  function waitFor(condFn, onOk, timeoutMs = 12000, intervalMs = 120) {
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      try { if (condFn()) { clearInterval(iv); onOk(); }
+            else if (Date.now() - t0 > timeoutMs) { clearInterval(iv); } }
+      catch { clearInterval(iv); }
+    }, intervalMs);
+  }
+  function waitForStableText(el, onStable, minLen = 2, quietMs = 200, timeoutMs = 8000) {
+    let last = (el.textContent || '').trim();
+    if (last.length >= minLen) {
+      let timer = setTimeout(() => onStable(el), quietMs);
+      const mo = new MutationObserver(() => {
+        const cur = (el.textContent || '').trim();
+        if (cur === last) return;
+        last = cur; clearTimeout(timer);
+        timer = setTimeout(() => { mo.disconnect(); onStable(el); }, quietMs);
+      });
+      mo.observe(el, { characterData:true, childList:true, subtree:true });
+      setTimeout(() => { try { mo.disconnect(); } catch {} }, timeoutMs);
+      return;
+    }
+    const mo = new MutationObserver(() => {
+      const cur = (el.textContent || '').trim();
+      if (cur.length >= minLen) { mo.disconnect(); waitForStableText(el, onStable, minLen, quietMs, timeoutMs); }
+    });
+    mo.observe(el, { characterData:true, childList:true, subtree:true });
+    setTimeout(() => { try { mo.disconnect(); } catch {} }, timeoutMs);
+  }
+
+  function readyThenDetectAndRender(selector) {
+    const runner = (el) => {
+      waitForStableText(el, () => {
+        const t = (el.textContent || '').trim();
+        const langObj = detectLang(t);
+        setInlineAfterLabel(el, langObj);
+      });
+    };
+    if (typeof waitForElement === 'function') {
+      waitForElement(selector, runner, 12000);
+    } else {
+      waitFor(() => !!document.querySelector(selector), () => runner(document.querySelector(selector)), 12000);
+    }
+  }
+
+  // ====== разові рендери для поточного DOM ==================================
+  function renderAccountListInlineAfter(){
+    document.querySelectorAll('ytd-account-item-renderer #channel-title').forEach((el)=>{
+      const langObj = detectLang((el.textContent||'').trim());
+      setInlineAfterLabel(el, langObj);
+    });
+  }
+  function renderDrawerInlineAfter(){
+    const el = document.querySelector('#entity-name.entity-name');
+    if(!el) return;
+    const langObj = detectLang((el.textContent||'').trim());
+    setInlineAfterLabel(el, langObj);
+  }
+
+  // ====== ініціалізація ======================================================
+  try {
+    readyThenDetectAndRender('ytd-account-item-renderer #channel-title');
+    readyThenDetectAndRender('#entity-name.entity-name');
+  } catch {}
+
+  // ====== debounce мутацій (Studio динамічне) ================================
+  let langMoScheduled = false;
+  const safeKick = () => {
+    if (langMoScheduled) return;
+    langMoScheduled = true;
+    setTimeout(() => {
+      langMoScheduled = false;
+      renderAccountListInlineAfter();
+      renderDrawerInlineAfter();
+    }, 250);
+  };
+
+  const moTargets = [document.body, document.querySelector('ytd-app') || document.documentElement].filter(Boolean);
+  const langMo = new MutationObserver(safeKick);
+  moTargets.forEach(t => langMo.observe(t, { childList:true, subtree:true }));
+
+  setInterval(safeKick, 3500);
 
 })();
