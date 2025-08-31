@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YT Stats + GEO
+// @name         YT Stats + GEO + cache
 // @namespace    http://tampermonkey.net/
-// @version      2.9.0
+// @version      2.9.1
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
@@ -769,15 +769,21 @@ setOmniSearchBadge(autoStatus);
   removeSignOutMenuItem();
 
   dlog('Script ready');
-/* === GeoBadge add-on (Google Sheet overrides, 2025-08) =====
-   Показує праворуч від назви каналу GEO з таблиці:
-   - якщо канал є в таблиці → показує значення з колонки B (українською)
-   - якщо немає → показує "пауза"
+/* === GeoBadge add-on (Google Sheet overrides + CACHE, 2025-08) =================
+   Політика:
+   - Спершу читаємо кеш із localStorage (миттєвий рендер).
+   - Якщо для каналу немає GEO у кеші → один раз повністю оновлюємо кеш із таблиці
+     і повторюємо пошук.
+   - Якщо й після оновлення немає → показуємо "пауза".
 =============================================================================== */
 
 const GEO_OVERRIDES_URL = "https://script.google.com/macros/s/AKfycbzqSQtJJp3gL5y2R3c3ABWx-aWcG8U9jcF_k-WOjdAfFclJ3OREtJcU4rEEs2snYV1K/exec";
-let geoMap = Object.create(null);
+const GEO_CACHE_LS_KEY = "yse_geo_cache_v2"; // bump версії при зміні формату
+
+let geoMap = Object.create(null);   // { normalizedName: "Україна", ... }
 let overridesReady = false;
+let overridesLoading = false;
+let overridesWaiters = [];          // колбек-и, що чекають на оновлення
 
 function normalizeName(s) {
   return String(s || "")
@@ -787,7 +793,35 @@ function normalizeName(s) {
     .replace(/\s+/g, " ");
 }
 
+// ---- CACHE (localStorage) ----
+function loadCacheFromLS() {
+  try {
+    const raw = localStorage.getItem(GEO_CACHE_LS_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.map) return false;
+    geoMap = parsed.map || Object.create(null);
+    overridesReady = true;
+    console.log("[YSE] GEO cache restored:", Object.keys(geoMap).length);
+    return true;
+  } catch (_) { return false; }
+}
+
+function saveCacheToLS() {
+  try {
+    localStorage.setItem(
+      GEO_CACHE_LS_KEY,
+      JSON.stringify({ ts: Date.now(), map: geoMap })
+    );
+  } catch (_) {}
+}
+
+// ---- NETWORK LOAD (повне оновлення) ----
 function loadGeoOverrides(cb) {
+  // якщо вже вантажиться — додаємося в чергу
+  if (overridesLoading) { if (cb) overridesWaiters.push(cb); return; }
+  overridesLoading = true;
+
   GM_xmlhttpRequest({
     method: "GET",
     url: GEO_OVERRIDES_URL,
@@ -795,26 +829,36 @@ function loadGeoOverrides(cb) {
       try {
         const json = JSON.parse(res.responseText || "{}");
         if (json && json.ok && Array.isArray(json.data)) {
-          geoMap = Object.create(null);
+          const next = Object.create(null);
           for (const row of json.data) {
             const name = normalizeName(row.channelName);
-            if (name && row.geoLabel) {
-              geoMap[name] = String(row.geoLabel).trim();
-            }
+            if (name && row.geoLabel) next[name] = String(row.geoLabel).trim();
           }
+          geoMap = next;
           overridesReady = true;
+          saveCacheToLS();
           console.log("[YSE] GEO overrides loaded:", Object.keys(geoMap).length);
+        } else {
+          console.warn("[YSE] GEO overrides: unexpected response");
         }
       } catch (e) {
         console.error("[YSE] overrides parse error:", e);
       } finally {
+        overridesLoading = false;
+        // повідомляємо всіх, хто чекав
+        (overridesWaiters.splice(0) || []).forEach(fn => { try { fn(); } catch(_) {} });
         cb && cb();
       }
     },
-    onerror: () => { cb && cb(); }
+    onerror: () => {
+      overridesLoading = false;
+      (overridesWaiters.splice(0) || []).forEach(fn => { try { fn(); } catch(_) {} });
+      cb && cb();
+    }
   });
 }
-// Мапа GEO → прапор
+
+// ---- Мапа GEO → прапор ----
 const GEO_FLAGS = {
   "Японія": "🇯🇵",
   "Польща": "🇵🇱",
@@ -822,7 +866,7 @@ const GEO_FLAGS = {
   "Арабія": "🇸🇦",
   "Нідерланди": "🇳🇱",
   "Іспанія": "🇪🇸",
-  "Ру": "🇷🇺",           // якщо треба уточнити, можна замінити на 🇷🇺 або інший прапор
+  "Ру": "🇷🇺",
   "Туреччина": "🇹🇷",
   "Португалія": "🇵🇹",
   "Італія": "🇮🇹",
@@ -847,11 +891,44 @@ const GEO_FLAGS = {
   "Тайланд": "🇹🇭",
   "Данія": "🇩🇰"
 };
+function flagForGeo(label) { return GEO_FLAGS[label] || "🌐"; }
 
-function flagForGeo(label) {
-  return GEO_FLAGS[label] || "🌐";
-}
-
+// ---- DOM helpers ----
+(function injectGeoStyles(){
+  if(document.getElementById('yse-geo-inline-after')) return;
+  const style=document.createElement('style');
+  style.id='yse-geo-inline-after';
+  style.textContent = `
+    yt-formatted-string#channel-title,
+    ytd-account-item-renderer #channel-title,
+    #entity-name.entity-name {
+      display:inline-block !important;
+      position:relative !important;
+      width:auto !important;
+      max-width:none !important;
+      white-space:nowrap !important;
+      vertical-align:baseline !important;
+    }
+    yt-formatted-string#channel-title[data-geo-label]::afteR,
+    ytd-account-item-renderer #channel-title[data-geo-label]::afteR,
+    #entity-name.entity-name[data-geo-label]::afteR {
+      content: " " attr(data-geo-label);
+      font:500 11px/1.2 Roboto,Arial,sans-serif;
+      white-space:nowrap;
+      opacity:.85;
+      margin-left:6px;
+    }
+    .yse-geo-float {
+      position:absolute; left:100%; top:0;
+      margin-left:6px;
+      font:500 11px/1.2 Roboto,Arial,sans-serif;
+      white-space:nowrap; opacity:.85;
+      pointer-events:none;
+      transform: translateY(0.06em);
+    }
+  `;
+  document.head.appendChild(style);
+})();
 
 function setInlineAfterLabel(el, geoText) {
   if (!el) return;
@@ -876,52 +953,21 @@ function setInlineAfterLabel(el, geoText) {
   }
 }
 
-(function injectGeoStyles(){
-  if(document.getElementById('yse-geo-inline-after')) return;
-  const style=document.createElement('style');
-  style.id='yse-geo-inline-after';
-  style.textContent = `
-    yt-formatted-string#channel-title,
-    ytd-account-item-renderer #channel-title,
-    #entity-name.entity-name {
-      display:inline-block !important;
-      position:relative !important;
-      width:auto !important;
-      max-width:none !important;
-      white-space:nowrap !important;
-      vertical-align:baseline !important;
-    }
-    yt-formatted-string#channel-title[data-geo-label]::after,
-    ytd-account-item-renderer #channel-title[data-geo-label]::after,
-    #entity-name.entity-name[data-geo-label]::after {
-      content: " " attr(data-geo-label);
-      font:500 11px/1.2 Roboto,Arial,sans-serif;
-      white-space:nowrap;
-      opacity:.85;
-      margin-left:6px;
-    }
-    .yse-geo-float {
-      position:absolute; left:100%; top:0;
-      margin-left:6px;
-      font:500 11px/1.2 Roboto,Arial,sans-serif;
-      white-space:nowrap; opacity:.85;
-      pointer-events:none;
-      transform: translateY(0.06em);
-    }
-  `;
-  document.head.appendChild(style);
-})();
+// ---- Кеш-пошук з авто-оновленням ----
+function ensureGeoForName(normName, cb) {
+  // 1) якщо вже є в кеші — миттєво
+  if (geoMap[normName]) { cb(geoMap[normName]); return; }
+  // 2) інакше — один раз оновлюємо повністю кеш і пробуємо знову
+  loadGeoOverrides(() => {
+    cb(geoMap[normName] || "пауза");
+  });
+}
 
 function renderOne(el) {
   if (!el) return;
-  if (!overridesReady) return;   // ⬅️ якщо ще не підвантажили — нічого не малюємо
   const name = (el.textContent || '').trim();
   const norm = normalizeName(name);
-  let geo = 'пауза';
-  if (geoMap[norm]) {
-    geo = geoMap[norm];
-  }
-  setInlineAfterLabel(el, geo);
+  ensureGeoForName(norm, (geo) => setInlineAfterLabel(el, geo));
 }
 
 function renderAccountList() {
@@ -939,15 +985,19 @@ function initRenderers() {
   renderDrawer();
 }
 
-loadGeoOverrides(() => {
-  initRenderers();
-});
+// 1) Миттєво підняти кеш із LS, щоби не чекати мережу
+loadCacheFromLS();
+initRenderers();
 
+// 2) Паралельно оновити повний кеш із Google Sheet (свіжість)
+loadGeoOverrides(() => { initRenderers(); });
+
+// 3) Спостерігачі за апдейтом DOM
 const moTargets=[document.body, document.querySelector('ytd-app')||document.documentElement].filter(Boolean);
 const geoMo=new MutationObserver(()=>initRenderers());
 moTargets.forEach(t=>geoMo.observe(t,{childList:true,subtree:true}));
 setInterval(initRenderers, 3500);
 
-console.log("[YSE] GeoBadge ready");
+console.log("[YSE] GeoBadge ready (cached)");
 
 })();
