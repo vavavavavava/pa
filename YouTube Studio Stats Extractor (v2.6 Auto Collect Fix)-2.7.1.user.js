@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YT Stats + GEO + Caches
 // @namespace    http://tampermonkey.net/
-// @version      2.9.3
+// @version      2.9.4
 // @description  Автозбір даних з Overview + Content, без рефакторингу робочих частин. Додає monetization, 4-й контейнер, Lifetime (3с), channelId.
 // @match        https://studio.youtube.com/*
 // @grant        GM_setClipboard
@@ -786,7 +786,7 @@ const GEO_FLAGS = {
   "Ізраїль": "🇮🇱", "Норвегія": "🇳🇴", "Малайзія": "🇲🇾", "Швеція": "🇸🇪", "Франція": "🇫🇷",
   "Чехія": "🇨🇿", "Філіпіни": "🇵🇭", "Сербія": "🇷🇸", "Тайланд": "🇹🇭", "Данія": "🇩🇰"
 };
-function flagForGeo(label) { return GEO_FLAGS[label] || "🌐"; }
+function flagForGeo(label) { return GEO_FLAGS[label] || ""; }
 
 // ---- Styles ----
 (function injectGeoStyles(){
